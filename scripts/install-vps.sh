@@ -21,7 +21,7 @@ if ! command -v docker >/dev/null; then apt-get install -y docker.io docker-comp
 docker compose version >/dev/null || { echo 'Pasang plugin Docker Compose v2 terlebih dahulu.' >&2; exit 1; }
 systemctl enable --now docker nginx
 bash scripts/test.sh
-image="mahad-media:$(git rev-parse --short=12 HEAD 2>/dev/null || date +%Y%m%d%H%M%S)"
+image="mahad-media:$(git -c safe.directory="$root" rev-parse --short=12 HEAD 2>/dev/null || date +%Y%m%d%H%M%S)"
 docker build --target production -t "$image" .
 MEDIA_IMAGE="$image" python3 scripts/init-env.py
 bash scripts/start.sh dev

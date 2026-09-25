@@ -2,8 +2,8 @@
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
-[[ -z "$(git status --porcelain)" ]] || { echo 'Commit perubahan terlebih dahulu agar rilis dapat dilacak.' >&2; exit 1; }
-image="mahad-media:$(git rev-parse --short=12 HEAD)"
+[[ -z "$(git -c safe.directory="$root" status --porcelain)" ]] || { echo 'Commit perubahan terlebih dahulu agar rilis dapat dilacak.' >&2; exit 1; }
+image="mahad-media:$(git -c safe.directory="$root" rev-parse --short=12 HEAD)"
 bash scripts/test.sh
 docker build --target production -t "$image" .
 bash scripts/backup.sh dev
