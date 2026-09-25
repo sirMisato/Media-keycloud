@@ -41,10 +41,26 @@ jobs:
       - run: for script in scripts/*.sh; do bash -n "$script"; done && python3 -m py_compile scripts/init-env.py && node --check public/assets/app.js && node --check public/sw.js
       - name: Build production image
         run: docker build --target production -t mahad-media:ci .
-      - name: Archive dependencies for reproducible preview
-        run: tar -czf /tmp/media-vendor.tar.gz vendor
-      - uses: actions/upload-artifact@v4
-        with:
-          name: media-vendor
-          path: /tmp/media-vendor.tar.gz
-          retention-days: 3
+      - name: Start production and development containers
+        run: |
+          MEDIA_IMAGE=mahad-media:ci python3 scripts/init-env.py
+          bash scripts/start.sh dev
+          bash scripts/start.sh prod
+          bash scripts/compose.sh dev exec -T -u www-data app php artisan db:seed --class=DemoSeeder --force
+          curl --fail --retry 3 --retry-delay 2 http://127.0.0.1:8081/up
+          curl --fail http://127.0.0.1:8081/ -o /tmp/media-prod.html
+          curl --fail http://127.0.0.1:8082/ -o /tmp/media-dev.html
+          grep -q 'Naskah pertama' /tmp/media-prod.html
+          grep -q 'Membaca zaman' /tmp/media-dev.html
+      - name: Backup and restore development
+        run: |
+          bash scripts/backup.sh dev
+          backup=$(find .deploy/backups -maxdepth 1 -type d -name 'dev-*' | sort | tail -1)
+          bash scripts/restore.sh dev "$backup"
+          curl --fail http://127.0.0.1:8082/ -o /tmp/media-restored.html
+          grep -q 'Membaca zaman' /tmp/media-restored.html
+      - name: Stop application containers
+        if: always()
+        run: |
+          if [ -f .deploy/dev.env ]; then bash scripts/compose.sh dev down --volumes; fi
+          if [ -f .deploy/prod.env ]; then bash scripts/compose.sh prod down --volumes; fi

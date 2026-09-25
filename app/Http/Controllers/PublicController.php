@@ -7,7 +7,7 @@ class PublicController extends Controller {
     private function live() { return Article::live()->with(['author','publishedRevision.category'])->latest('published_at'); }
     public function home() {
         $articles=$this->live()->orderByDesc('id')->limit(15)->get();
-        $lead=$articles->firstWhere('featured',true) ?? $articles->first();
+        $lead=$this->live()->where('featured',true)->first() ?? $articles->first();
         return view('public.home',compact('articles','lead'));
     }
     public function index(Request $request,?string $slug=null) {

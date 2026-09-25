@@ -1,6 +1,6 @@
 <?php
 namespace Tests\Feature;
-use App\Models\{Article,Revision,User};
+use App\Models\{Article,Revision,User,Category};
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
@@ -10,7 +10,7 @@ class EditorialWorkflowTest extends TestCase {
     protected function setUp(): void { parent::setUp(); config(['media.noindex'=>false]); $this->seed(); }
     private function user(string $role='contributor'): User { $u=User::factory()->create();$u->role=$role;$u->save();return $u; }
     private function payload(array $extra=[]): array {
-        return array_merge(['title'=>'Kajian fiqih kehidupan digital','category_id'=>1,'excerpt'=>'Ringkasan kajian yang cukup panjang untuk dibaca.',
+        return array_merge(['title'=>'Kajian fiqih kehidupan digital','category_id'=>Category::where('slug','fiqih-kontemporer')->value('id'),'excerpt'=>'Ringkasan kajian yang cukup panjang untuk dibaca.',
             'body'=>"## Pokok persoalan\n\nNaskah terverifikasi yang memerlukan persetujuan redaksi sebelum dipublikasikan.",'sources'=>'Kitab rujukan, penulis, edisi, halaman.'],$extra);
     }
     private function draft(User $u): Revision { $this->actingAs($u)->post(route('draft.store'),$this->payload())->assertRedirect();return Revision::latest('id')->firstOrFail(); }
