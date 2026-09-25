@@ -23,7 +23,7 @@ getent ahostsv4 media-dev.keycloud.id
 sudo ss -ltnp
 ```
 
-Jangan jalankan instalasi otomatis jika 80/443 dikelola Apache, Caddy, panel hosting, atau proxy selain Nginx. Ikuti bagian proxy yang sudah ada di bawah. Port internal 8081 dan 8082 harus kosong. Nginx lain di VPS boleh tetap digunakan; installer menambah file khusus dua domain ini.
+Installer mendukung Caddy yang sudah berjalan sebagai layanan systemd dengan Caddyfile, atau Nginx. Caddy aktif dipilih otomatis; gunakan `--proxy=caddy` untuk memilihnya secara eksplisit. Port internal 8081 dan 8082 harus kosong. Situs lain pada proxy tetap dipertahankan. Jika port 80/443 dikelola Apache, panel hosting, atau proxy lain, gunakan bagian integrasi manual di bawah. Panduan khusus Caddy: [CADDY.md](CADDY.md).
 
 ## 2. Clone dan tmux
 
@@ -35,12 +35,12 @@ tmux new -s media-install
 sudo bash scripts/install-vps.sh
 ```
 
-Installer melakukan tes SQLite dan PostgreSQL, build image production, pembuatan secret unik per lingkungan, migrasi dan kategori, data demo khusus development, Nginx/HTTPS, lalu pembuatan admin pada kedua lingkungan. Proses build pertama bisa memakan waktu beberapa menit.
+Installer memasang Docker/Compose bila belum tersedia, melakukan tes SQLite dan PostgreSQL, build image production, pembuatan secret unik per lingkungan, migrasi dan kategori, data demo khusus development, integrasi Caddy/Nginx, lalu pembuatan admin pada kedua lingkungan. Proses build pertama bisa memakan waktu beberapa menit. Mode Caddy memakai layanan yang sudah aktif dan penerbitan HTTPS otomatisnya; mode Nginx memakai Certbot.
 
 Isian interaktif:
 
 1. Password **Basic Auth development**, username `reviewer`.
-2. Email penerbitan sertifikat HTTPS.
+2. Email penerbitan sertifikat HTTPS (hanya mode Nginx; Caddy memakai pengaturan yang sudah ada).
 3. Email admin media.
 4. Password admin production, diulang; minimal 12 karakter.
 5. Password admin development, diulang; gunakan password berbeda.
@@ -91,8 +91,9 @@ sudo bash scripts/start.sh dev
 sudo bash scripts/start.sh prod
 # Hanya jika data contoh dev belum ada; seeder idempoten.
 sudo bash scripts/compose.sh dev exec -u www-data app php artisan db:seed --class=DemoSeeder --force
-# Jalankan jika Nginx/HTTPS belum selesai. Tidak menimpa file Nginx yang sudah ada.
-sudo bash scripts/configure-web.sh
+# Pilih SATU sesuai proxy VPS, jika integrasi proxy belum selesai:
+sudo python3 scripts/configure-caddy.py       # Caddy
+# sudo bash scripts/configure-web.sh         # Nginx
 # Jalankan untuk lingkungan yang belum memiliki admin.
 sudo bash scripts/compose.sh prod exec -u www-data app php artisan media:admin email-admin-anda@example.com
 sudo bash scripts/compose.sh dev exec -u www-data app php artisan media:admin email-admin-anda@example.com

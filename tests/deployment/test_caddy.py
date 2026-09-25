@@ -129,7 +129,7 @@ http://existing.example:{self.http_port} {{
     def test_invalid_new_config_restores_files_without_reload(self):
         render = self.setup.render
         with patch.object(self.setup, "render", side_effect=lambda hashed: render(hashed) + "\nmedia-broken.invalid {\n unknown_directive_here\n}\n"), patch.object(self.setup, "reload") as reload:
-            with self.assertRaises(module.SetupError):
+            with self.assertRaisesRegex(module.SetupError, "unknown_directive_here"):
                 self.setup.apply(self.password)
             reload.assert_not_called()
         self.assert_untouched()

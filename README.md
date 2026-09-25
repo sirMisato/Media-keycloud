@@ -1,10 +1,10 @@
 # Media Ma’had Aly Situbondo
 
-Portal media Islam dan fiqih kontemporer: Laravel 13 / PHP 8.3, PostgreSQL 16, Blade, CSS/JavaScript lokal, Docker, Nginx, dan PWA. Antarmuka mengambil inspirasi hierarki kanal NU Online dan komunikasi media Muhammadiyah, dengan identitas Ma’had Aly sendiri.
+Portal media Islam dan fiqih kontemporer: Laravel 13 / PHP 8.3, PostgreSQL 16, Blade, CSS/JavaScript lokal, Docker, Caddy/Nginx, dan PWA. Antarmuka mengambil inspirasi hierarki kanal NU Online dan komunikasi media Muhammadiyah, dengan identitas Ma’had Aly sendiri.
 
 ## Instalasi VPS
 
-Untuk Ubuntu 24.04, Docker Compose v2, Nginx. Hermes yang sudah ada tidak perlu diubah. Arahkan DNS A `media.keycloud.id` dan `media-dev.keycloud.id` ke IP VPS; port 80/443 harus dapat diakses untuk HTTPS.
+Untuk Ubuntu 24.04 dengan Caddy yang sudah berjalan, atau Nginx. Docker Compose v2 dipasang bila belum tersedia. Hermes yang sudah ada tidak perlu diubah. Arahkan DNS A `media.keycloud.id` dan `media-dev.keycloud.id` ke IP VPS; port 80/443 harus dapat diakses untuk HTTPS.
 
 ```bash
 git clone https://github.com/sirMisato/Media-keycloud.git
@@ -14,6 +14,8 @@ sudo bash scripts/install-vps.sh
 ```
 
 Installer menjalankan tes, build image, membuat dua database beserta kunci terpisah, mengisi kategori, menyiapkan domain/HTTPS, dan meminta pembuatan admin. Tidak ada kata sandi bawaan. Installer berhenti jika port/domain bentrok atau konfigurasi sudah pernah dibuat. Petunjuk lengkap: [docs/VPS.md](docs/VPS.md).
+
+**VPS sudah memakai Caddy dan Hermes:** installer mendeteksi layanan Caddy secara otomatis. Untuk memilihnya secara eksplisit, gunakan `sudo bash scripts/install-vps.sh --proxy=caddy`. Jika clone versi lama sempat berhenti dengan pesan “Port web dikelola selain Nginx”, jalankan `git pull --ff-only origin main` terlebih dahulu. Mode Caddy mempertahankan situs lama, mencadangkan Caddyfile, memvalidasi tambahan rute, dan melakukan reload. Panduan serta langkah pemulihan: [docs/CADDY.md](docs/CADDY.md).
 
 | Lingkungan | Alamat | Database | Akses |
 |---|---|---|---|

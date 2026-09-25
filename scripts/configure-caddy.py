@@ -125,7 +125,7 @@ media-dev.keycloud.id {{
             raise SetupError("Password harus sepanjang 12–72 byte tanpa baris baru.")
         if password != password_reader("Ulangi password Basic Auth: "):
             raise SetupError("Password tidak sama.")
-        password_hash = self.command("caddy", "hash-password", "--algorithm", "bcrypt", input=password).strip()
+        password_hash = self.command("caddy", "hash-password", "--algorithm", "bcrypt", input=password + "\n").strip()
         del password
         if not re.fullmatch(r"\$2[aby]\$\d\d\$[./A-Za-z0-9]{53}", password_hash):
             raise SetupError("Caddy tidak menghasilkan hash bcrypt yang valid.")
