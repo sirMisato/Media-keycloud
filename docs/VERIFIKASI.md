@@ -1,6 +1,6 @@
 # Hasil verifikasi
 
-Kode aplikasi pada commit `020fb22487dbb4b64736cd27da9a8d53de4c99e9` lulus seluruh job [Media CI #36145964851](https://github.com/sirMisato/Media-keycloud/actions/runs/36145964851). Commit sesudahnya hanya memperbarui dokumen hasil ini.
+Versi awal aplikasi pada commit `020fb22487dbb4b64736cd27da9a8d53de4c99e9` lulus seluruh job [Media CI #36145964851](https://github.com/sirMisato/Media-keycloud/actions/runs/36145964851). Hasilnya tercatat di tabel berikut. Dukungan Caddy ditambahkan dan diuji terpisah sebagaimana dijelaskan di bawah.
 
 | Pemeriksaan | Hasil |
 |---|---|
@@ -16,6 +16,14 @@ Kode aplikasi pada commit `020fb22487dbb4b64736cd27da9a8d53de4c99e9` lulus selur
 
 Pengujian lokal juga meliputi validasi Composer dan respons HTTP beranda, kanal, artikel, login, manifest, serta service worker. Tidak diperlukan proses build frontend.
 
+## Dukungan Caddy yang sudah berjalan
+
+Job `caddy` pada [Media CI #36156830059](https://github.com/sirMisato/Media-keycloud/actions/runs/36156830059), commit `dfd23ed4d39ac11a5e3b559824213d6ec06e26bb`, lulus **6 tes integrasi dengan binary Caddy 2.6.2** dan **2 tes alur installer dengan perintah sistem yang disimulasikan**.
+
+Tes integrasi menjalankan proses Caddy lokal dan memeriksa respons HTTP situs lama sebelum/sesudah pemasangan. Cakupannya: penambahan kedua domain beserta Basic Auth, konfigurasi upstream, password berbentuk hash, backup, pemanggilan ulang tanpa mengganti password, import wildcard tanpa duplikasi, penolakan domain yang sudah ada, dan penolakan jika konfigurasi aktif berbeda dari file. Konfigurasi tidak valid serta simulasi reload ditolak menguji pemulihan file dan kelangsungan respons situs lama.
+
+Tes alur installer memeriksa pemilihan Caddy otomatis/eksplisit, pemasangan Docker/Compose ketika belum tersedia, tidak adanya perintah pemasangan Nginx/Certbot atau penghentian Caddy/Hermes, serta penolakan bentrok layanan sebelum instalasi. Tes ini tidak menjalankan apt pada VPS pengguna. Kode tes tersedia di `tests/deployment/`.
+
 ## Skenario redaksi yang diuji
 
 Tes berada di `tests/Feature/EditorialWorkflowTest.php`. Cakupannya meliputi batas hak akses admin/kontributor, kepemilikan draf, pencegahan publikasi lewat manipulasi input, pratinjau privat, persetujuan versi yang tepat, dan penguncian naskah yang sedang direview.
@@ -26,7 +34,7 @@ Login/logout, akun nonaktif, pengelolaan pengguna dan identitas media, halaman r
 
 ## Pemeriksaan setelah pemasangan VPS
 
-VPS pengguna tidak diakses dalam sesi pembangunan ini. DNS, konfigurasi Nginx pada VPS sebenarnya, sertifikat HTTPS, dan pemasangan PWA pada perangkat belum diverifikasi. Pemeriksaan visual dengan browser juga belum selesai karena browser pengujian tidak dapat mengakses server lokal; pemeriksaan HTTP dan template tidak menggantikan peninjauan visual.
+VPS pengguna tidak diakses dalam sesi pembangunan ini. DNS, integrasi Caddy/Nginx pada VPS sebenarnya, sertifikat HTTPS publik, dan pemasangan PWA pada perangkat belum diverifikasi. Pemeriksaan visual dengan browser juga belum selesai karena browser pengujian tidak dapat mengakses server lokal; pemeriksaan HTTP dan template tidak menggantikan peninjauan visual.
 
 Setelah installer selesai, gunakan development untuk memeriksa:
 
