@@ -6,6 +6,16 @@ on:
 permissions:
   contents: read
 jobs:
+  caddy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install test Caddy
+        run: sudo apt-get update && sudo apt-get install -y caddy
+      - name: Check Caddy reload, rollback and existing sites
+        run: python3 -m unittest discover -s tests/deployment -p test_caddy.py -v
+      - name: Check installer with existing Caddy and missing Docker
+        run: sudo python3 -m unittest discover -s tests/deployment -p test_installer.py -v
   application:
     runs-on: ubuntu-latest
     services:
