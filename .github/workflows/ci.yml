@@ -1,0 +1,50 @@
+name: Media CI
+on:
+  push:
+    branches: [main, develop, 'codex/**']
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  application:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: media_test
+          POSTGRES_USER: media_test
+          POSTGRES_PASSWORD: ci-only-not-production
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U media_test -d media_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, dom, xml, pdo_sqlite, pdo_pgsql, gd, bcmath, zip
+          coverage: none
+      - run: composer install --no-interaction --prefer-dist --no-progress
+      - run: cp .env.example .env && php artisan key:generate
+      - run: php artisan test
+      - run: php artisan test
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: 127.0.0.1
+          DB_PORT: 5432
+          DB_DATABASE: media_test
+          DB_USERNAME: media_test
+          DB_PASSWORD: ci-only-not-production
+      - run: php artisan view:cache
+      - run: for script in scripts/*.sh; do bash -n "$script"; done && python3 -m py_compile scripts/init-env.py && node --check public/assets/app.js && node --check public/sw.js
+      - name: Build production image
+        run: docker build --target production -t mahad-media:ci .
+      - name: Archive dependencies for reproducible preview
+        run: tar -czf /tmp/media-vendor.tar.gz vendor
+      - uses: actions/upload-artifact@v4
+        with:
+          name: media-vendor
+          path: /tmp/media-vendor.tar.gz
+          retention-days: 3

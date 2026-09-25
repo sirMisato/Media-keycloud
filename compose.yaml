@@ -1,0 +1,52 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_DATABASE:?missing database}
+      POSTGRES_USER: ${DB_USERNAME:?missing username}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?missing password}
+    volumes:
+      - database:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+  app:
+    image: ${APP_IMAGE:?missing image}
+    restart: unless-stopped
+    env_file: ${ENV_FILE:?missing env file}
+    ports:
+      - "127.0.0.1:${HTTP_PORT:?missing port}:80"
+    volumes:
+      - uploads:/var/www/html/storage
+    depends_on:
+      db: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "php -r 'exit(@file_get_contents("http://127.0.0.1/up") === false ? 1 : 0);'"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+  scheduler:
+    image: ${APP_IMAGE:?missing image}
+    restart: unless-stopped
+    env_file: ${ENV_FILE:?missing env file}
+    command: ["sh", "-c", "while true; do su -s /bin/sh www-data -c 'php artisan schedule:run'; sleep 30; done"]
+    volumes:
+      - uploads:/var/www/html/storage
+    depends_on:
+      app: {condition: service_healthy}
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+volumes:
+  database:
+  uploads:

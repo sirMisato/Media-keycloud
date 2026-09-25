@@ -1,0 +1,14 @@
+/.git
+/.env
+/.env.*
+!/.env.example
+/.deploy
+/vendor
+/node_modules
+/storage/**/*.log
+/database/*.sqlite*
+/tests/.phpunit*
+/.phpunit*
+/docs/screenshots
+
+/.composer-preview.*
