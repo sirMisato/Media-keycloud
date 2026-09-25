@@ -9,7 +9,7 @@ class AppServiceProvider extends ServiceProvider {
         \Carbon\Carbon::setLocale('id');
         Paginator::defaultView('components.pagination');
         if (str_starts_with(config('app.url'),'https://')) URL::forceScheme('https');
-        View::composer(['layouts.*'],function ($view) {
+        View::composer(['layouts.*','public.*'],function ($view) {
             $view->with('site',\App\Models\Setting::values());
             $view->with('channels',\App\Models\Category::orderBy('id')->get());
         });

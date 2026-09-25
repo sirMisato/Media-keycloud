@@ -7,7 +7,7 @@ use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 class EditorialWorkflowTest extends TestCase {
     use RefreshDatabase;
-    protected function setUp(): void { parent::setUp(); $this->seed(); }
+    protected function setUp(): void { parent::setUp(); config(['media.noindex'=>false]); $this->seed(); }
     private function user(string $role='contributor'): User { $u=User::factory()->create();$u->role=$role;$u->save();return $u; }
     private function payload(array $extra=[]): array {
         return array_merge(['title'=>'Kajian fiqih kehidupan digital','category_id'=>1,'excerpt'=>'Ringkasan kajian yang cukup panjang untuk dibaca.',
@@ -119,7 +119,7 @@ class EditorialWorkflowTest extends TestCase {
     }
     public function test_demo_seed_is_denied_in_production(): void {
         $this->app->detectEnvironment(fn ()=>'production');config(['media.demo'=>true]);
-        $this->expectException(\RuntimeException::class);$this->seed(\Database\Seeders\DemoSeeder::class);
+        $this->expectException(\RuntimeException::class);app(\Database\Seeders\DemoSeeder::class)->run();
     }
     public function test_noindex_and_private_cache_headers(): void {
         config(['media.noindex'=>true]);$this->get('/')->assertHeader('X-Robots-Tag','noindex, nofollow')->assertHeader('Cache-Control','no-store, private');

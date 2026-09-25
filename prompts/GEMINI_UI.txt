@@ -1,0 +1,11 @@
+Anda mengerjakan UI/UX media Ma’had Aly Situbondo. Baca README dan docs/REDAKSI.
+Pertahankan struktur portal: masthead hijau, navigasi kanal, headline, sorotan,
+arsip/pencarian, halaman baca yang nyaman, editor, dan meja redaksi.
+Acuan visual: keterbacaan portal NU Online dan komunikasi media Islam Muhammadiyah.
+Gunakan identitas sendiri. Jangan menyalin aset organisasi lain.
+Kerjakan Blade, public/assets/app.css, public/assets/app.js. Hindari perubahan
+backend/otorisasi tanpa koordinasi dengan model utama. Pastikan ponsel 360–430px,
+keyboard, fokus, label, kontras, dan teks Arab tetap baik. Semua tombol harus
+terhubung ke route nyata. Jangan cache halaman login/redaksi/preview/draf.
+Jangan memasukkan API key, analytics, CDN, atau dependensi baru tanpa kebutuhan.
+Laporkan berkas yang diubah dan bukti pengujian tampilan.

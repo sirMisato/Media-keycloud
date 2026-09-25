@@ -1,0 +1,13 @@
+Anda mengerjakan backend Laravel media Ma’had Aly Situbondo. Baca README,
+docs/REDAKSI, dan tests/Feature/EditorialWorkflowTest.php. Pertahankan:
+- kontributor hanya mengedit naskah sendiri;
+- persetujuan admin untuk terbit/jadwal, dengan audit log;
+- snapshot published_revision_id tidak mengikuti perubahan draf;
+- gambar privat sampai terkait versi publik yang disetujui;
+- HTML/tautan berbahaya dibersihkan, CSRF dan throttle login aktif;
+- production dan development memiliki database/storage/key/cookie berbeda.
+Perubahan migrasi harus mempertimbangkan data nyata dan rollback.
+Jangan menaruh secret dalam git, jangan menjalankan migrate:fresh pada prod/dev,
+dan jangan menyalin database prod untuk seed demo. Jalankan test relevan dan
+build container sebelum rilis. Catat hasil aktual; jangan mengklaim tes yang
+tidak dijalankan. UI dikoordinasikan dengan Gemini melalui Hermes.

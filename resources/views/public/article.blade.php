@@ -2,9 +2,13 @@
 @section('title',$revision->title.' — Ma’had Aly')
 @section('description',$revision->excerpt)
 @section('ogtype','article')
-@if($revision->coverUrl())@section('ogimage',$revision->coverUrl())@endif
+@if($revision->coverUrl())@section('ogimage',$revision->coverUrl())
+@endif
 @section('content')<article class="wrap article-page"><div class="breadcrumbs"><a href="/">Beranda</a> / <a href="{{ route('channel',$revision->category->slug) }}">{{ $revision->category->name }}</a></div><header class="article-head"><a class="eyebrow" href="{{ route('channel',$revision->category->slug) }}">{{ $revision->category->name }}</a><h1>{{ $revision->title }}</h1><p class="article-deck">{{ $revision->excerpt }}</p><div class="article-byline"><div class="meta"><span class="author-dot">{{ mb_substr($article->author->name,0,1) }}</span><span><strong>{{ $article->author->name }}</strong><br>{{ $article->published_at->translatedFormat('d F Y, H:i') }} WIB · {{ $revision->readingMinutes() }} menit baca</span></div><button class="button outline" data-share>Bagikan ↗</button></div></header>
-@if($revision->coverUrl())<figure class="article-cover"><img src="{{ $revision->coverUrl() }}" alt="{{ $revision->cover_caption ?: $revision->title }}"><figcaption>{{ $revision->cover_caption }}</figcaption></figure>@endif
-<div class="reading-layout"><aside class="reading-aside"><span class="tiny-label">DALAM KANAL</span><h3>{{ $revision->category->name }}</h3><p>{{ $revision->category->description }}</p><a href="{{ route('channel',$revision->category->slug) }}">Kajian lainnya →</a></aside><div><div class="prose">{!! $revision->html() !!}</div>@if($revision->sources)<section class="references"><h2>Rujukan & catatan</h2><p class="preserve">{{ $revision->sources }}</p></section>@endif<div class="article-end"><strong>Redaksi {{ $site['name'] }}</strong><p>Ada koreksi atau masukan? Hubungi redaksi melalui <a href="{{ route('page','tentang') }}">halaman kontak</a>.</p></div></div></div>
-@if($related->count())<section class="latest-section"><div class="section-heading"><h2>Baca juga</h2></div><div class="cards">@foreach($related as $item)@include('components.card')@endforeach</div></section>@endif
+@if($revision->coverUrl())<figure class="article-cover"><img src="{{ $revision->coverUrl() }}" alt="{{ $revision->cover_caption ?: $revision->title }}"><figcaption>{{ $revision->cover_caption }}</figcaption></figure>
+@endif
+<div class="reading-layout"><aside class="reading-aside"><span class="tiny-label">DALAM KANAL</span><h3>{{ $revision->category->name }}</h3><p>{{ $revision->category->description }}</p><a href="{{ route('channel',$revision->category->slug) }}">Kajian lainnya →</a></aside><div><div class="prose">{!! $revision->html() !!}</div>@if($revision->sources)<section class="references"><h2>Rujukan & catatan</h2><p class="preserve">{{ $revision->sources }}</p></section>
+@endif<div class="article-end"><strong>Redaksi {{ $site['name'] }}</strong><p>Ada koreksi atau masukan? Hubungi redaksi melalui <a href="{{ route('page','tentang') }}">halaman kontak</a>.</p></div></div></div>
+@if($related->count())<section class="latest-section"><div class="section-heading"><h2>Baca juga</h2></div><div class="cards">@foreach($related as $item)@include('components.card')@endforeach</div></section>
+@endif
 </article>@endsection
