@@ -25,7 +25,7 @@ jobs:
       - name: Install isolated Hermes test runtime
         run: |
           python -m venv "$RUNNER_TEMP/hermes-test"
-          "$RUNNER_TEMP/hermes-test/bin/python" -m pip install './.hermes-ci[telegram]'
+          "$RUNNER_TEMP/hermes-test/bin/python" -m pip install -e './.hermes-ci[telegram]'
       - name: Verify real profiles, provider routing, gateway config and Kanban worktrees
         env:
           MEDIA_HERMES_BIN: ${{ runner.temp }}/hermes-test/bin/hermes
