@@ -108,7 +108,69 @@ else:
         self.assertNotIn("terminal", pm["platform_toolsets"]["telegram"])
         self.assertNotIn("media-pm", pm["kanban"]["dispatch_profiles"])
         self.assertFalse(pm["gateway"]["multiplex_profiles"])
+        self.assertTrue(pm["gateway"]["standalone"])
         self.assertEqual(pm["platforms"]["telegram"]["extra"]["group_policy"], "disabled")
+
+    def test_repair_migrates_legacy_service_and_preserves_team_data(self):
+        root = self.profiles()
+        data_dir = Path(self.state["data_dir"])
+        config = root / "profiles/media-pm/config.yaml"
+        old_config = json.loads(config.read_text())
+        old_config["gateway"].pop("standalone")
+        team.write_json(config, old_config)
+        controller = data_dir / "control.py"
+        team.write_private(controller, "# previous controller\n")
+        unit = self.base / "units/media-hermes.service"
+        team.write_private(unit, team.unit_text(data_dir).replace("RestartPreventExitStatus=78\n", ""))
+        team.write_json(data_dir / "team.json", self.state)
+        team.write_private(root / "profiles/media-pm/sessions/keep", "existing conversation\n")
+        team.write_private(root / "kanban/keep", "existing tasks\n")
+        old_hermes = self.base / "home/.hermes/config.yaml"
+        team.write_private(old_hermes, "keep old Hermes\n")
+        preserved = {p: p.read_bytes() for p in self.base.rglob("*")
+                     if p.is_file() and p not in (config, controller, unit)}
+        with self.assertRaisesRegex(team.TeamError, "Konfigurasi media-pm"):
+            team.check_team(self.state, live=False)
+        for _ in range(2):  # Safe to retry after a previous successful or partial repair.
+            with mock.patch.object(team, "unit_path", return_value=unit), \
+                 mock.patch.object(team, "control") as control, \
+                 mock.patch.object(team, "run") as run, \
+                 mock.patch.object(team, "api_json", side_effect=AssertionError("No API needed")), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                team.repair_gateway(self.state)
+                team.check_team(self.state, live=False)
+            self.assertEqual(control.call_args_list, [mock.call("stop"), mock.call("reset-failed")])
+            self.assertEqual(run.call_args.args[0], ["systemctl", "--user", "daemon-reload"])
+        self.assertTrue(json.loads(config.read_text())["gateway"]["standalone"])
+        self.assertEqual(controller.read_bytes(), (REPO / "scripts/hermes-team.py").read_bytes())
+        self.assertIn("RestartPreventExitStatus=78\n", unit.read_text())
+        for path, value in preserved.items():
+            self.assertEqual(path.read_bytes(), value, str(path))
+        for path in (config, controller, unit):
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_repair_refuses_unrelated_edits_before_stopping_or_writing(self):
+        root = self.profiles()
+        data_dir = Path(self.state["data_dir"])
+        unit = self.base / "units/media-hermes.service"
+        team.write_private(unit, team.unit_text(data_dir))
+        team.write_private(data_dir / "control.py", "# old controller\n")
+        config = root / "profiles/media-pm/config.yaml"
+        original = json.loads(config.read_text())
+        invalid = json.loads(config.read_text())
+        invalid["platforms"]["telegram"]["extra"]["allow_from"] = ["wrong-owner"]
+        team.write_json(config, invalid)
+        with mock.patch.object(team, "unit_path", return_value=unit), \
+             mock.patch.object(team, "control") as control:
+            with self.assertRaisesRegex(team.TeamError, "Konfigurasi media-pm"):
+                team.repair_gateway(self.state)
+            control.assert_not_called()
+            team.write_json(config, original)
+            unit.write_text("[Service]\nExecStart=/bin/true\n")
+            with self.assertRaisesRegex(team.TeamError, "bukan unit installer"):
+                team.repair_gateway(self.state)
+            control.assert_not_called()
+        self.assertEqual((data_dir / "control.py").read_text(), "# old controller\n")
 
     def test_existing_profile_is_not_overwritten(self):
         root = self.profiles()

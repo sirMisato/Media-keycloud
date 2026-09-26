@@ -62,6 +62,10 @@ pembatasan filesystem/jaringan yang kuat, gunakan akun OS/container terpisah.
 tersedia gunakan `python3 scripts/hermes-team.py start`. Jangan memasang
 gateway tambahan dengan `hermes gateway install` untuk profil tim ini.
 
+PM menggunakan `gateway.standalone: true` agar service khusus ini diizinkan
+Hermes. Ini opsi kompatibilitas sementara dari upstream; `multiplex_profiles:
+false` saja tidak cukup pada Hermes sekarang. Hanya PM menjalankan gateway.
+
 ## Perintah Telegram
 
 Kirim pesan biasa `Status tim`, lalu uji kedua provider dan kelima worker:
@@ -149,6 +153,7 @@ dan handoff pada VPS. Tinjau/redaksi log sebelum membagikannya.
 | Telegram 409 | Bot dipakai poller lain; hentikan duplikat milik bot tersebut atau buat bot baru |
 | Webhook aktif | Pakai bot khusus baru; installer tidak menghapus webhook lama |
 | D-Bus/linger tidak ada | `sudo loginctl enable-linger "$USER"`, login ulang bila perlu, lalu `start` |
+| `Profile 'media-pm' does not get a gateway of its own`, exit `78/CONFIG` | Jalankan pemulihan gateway di bawah; tidak perlu setup ulang |
 | Bot diam | Periksa service/log, chat privat, `/whoami`, serta API/billing |
 | Task blocked | Baca alasan, perbaiki sebab, minta PM melanjutkan task terkait |
 | sudo/Docker/browser tidak ada | Siapkan hak/dependensi secara terpisah; worker tidak otomatis melewati batas |
@@ -159,6 +164,41 @@ Setup menolak direktori tim/unit yang sudah ada. Jika terputus sebelum
 lalu **pindahkan** keduanya ke nama backup unik sebelum setup ulang. Jangan
 menghapus `~/.hermes`, checkout web, atau `.deploy`. Jika `team.json` ada dan
 hanya startup gagal, gunakan `start`, bukan setup ulang.
+
+### Memulihkan penolakan gateway PM (exit 78)
+
+Paket awal belum menandai PM sebagai gateway standalone. Untuk instalasi
+yang sudah menyimpan enam profil dan `team.json`, jalankan sebagai user
+pemasang Hermes, **tanpa sudo**:
+
+```bash
+cd ~/Media-keycloud
+git status --short
+git pull --ff-only origin main
+python3 scripts/hermes-team.py repair-gateway
+python3 scripts/hermes-team.py start
+python3 scripts/hermes-team.py logs
+```
+
+Jika Git menolak pembaruan karena perubahan lokal/divergensi, simpan dan
+tinjau perubahan itu dahulu; jangan force-reset. Jalankan langkah berikutnya
+hanya setelah langkah sebelumnya berhasil.
+
+`repair-gateway` memeriksa konfigurasi lama, menghentikan **media-hermes saja**,
+menambahkan `gateway.standalone: true` pada PM, memperbarui salinan
+`control.py` yang dipakai service, serta menghapus status gagal systemd.
+Key/token, allowlist, role, memori, sesi, dan task dipertahankan. Perintah ini
+tidak menyalakan gateway; `start` melakukan pemeriksaan API/bot sebelum
+menyalakannya. Unit baru tidak mengulang startup untuk error konfigurasi 78.
+Pemulihan boleh diulang; unit atau konfigurasi lain yang tidak dikenali
+ditolak sebelum service dihentikan. Jangan hanya mengedit config PM manual,
+karena controller lama memeriksa konfigurasi tersebut secara ketat.
+
+Tunggu sekitar 15 detik setelah `start`, periksa `status` dan `logs`, lalu
+kirim `/whoami` dan `Status tim` di chat privat bot. Service `active` sesaat
+setelah start belum membuktikan bot berhasil terhubung. Bila log masih
+menyebut `automatic dependency repair limit reached`, simpan error lengkap
+terbarunya untuk diagnosis dependensi; pesan itu terpisah dari penolakan 78.
 
 ## Penghentian dan rotasi
 
@@ -205,10 +245,13 @@ Tes offline: `python3 -m unittest discover -s tests/hermes -p 'test_*.py' -v`.
 Tes kontrak native dijalankan bila `MEDIA_HERMES_BIN` menunjuk CLI Hermes dan
 `MEDIA_HERMES_PYTHON` menunjuk Python runtime-nya. Memakai home sementara dan
 kredensial dummy, tanpa inference atau bot live. CI memin source Hermes.
+Tes native mereproduksi penolakan 78 dengan konfigurasi lama dan memastikan
+PM hasil perbaikan lolos pemeriksaan startup serta tetap tidak multiplex.
 
 Rujukan primer, diperiksa 26 September 2026:
 
 - [Hermes profiles](https://hermes-agent.nousresearch.com/docs/user-guide/profiles)
+- [Hermes gateway standalone dan multiplex](https://hermes-agent.nousresearch.com/docs/user-guide/multi-profile-gateways)
 - [Hermes Kanban](https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban)
 - [Hermes providers](https://hermes-agent.nousresearch.com/docs/integrations/providers)
 - [Hermes Telegram](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/telegram)

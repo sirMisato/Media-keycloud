@@ -224,7 +224,9 @@ def profile_config(role, codex_model, gemini_model, owner):
         "terminal": {"backend": "local", "cwd": ".", "timeout": 180},
         "platform_toolsets": {"cli": tools, "telegram": tools if pm else []},
         "security": {"redact_secrets": True},
-        "gateway": {"multiplex_profiles": False},
+        # Hermes no longer treats multiplex_profiles:false as a topology switch.
+        # The PM has its own data root, bot and supervisor; opt it out explicitly.
+        "gateway": {"multiplex_profiles": False, **({"standalone": True} if pm else {})},
         "platforms": {**{name: {"enabled": False} for name in OTHER_PLATFORMS},
                       "telegram": {"enabled": pm, "guest_mode": False, "extra": {
             "dm_policy": "allowlist", "allow_from": [owner] if pm else [],
@@ -278,7 +280,8 @@ def unit_text(data_dir):
             f"WorkingDirectory={str(data_dir).replace('%', '%%')}\n"
             f"ExecStart=/usr/bin/python3 {quote(data_dir / 'control.py')} --data-dir "
             f"{quote(data_dir)} _gateway\n"
-            "Restart=on-failure\nRestartSec=10\nTimeoutStopSec=45\nKillMode=control-group\n"
+            "Restart=on-failure\nRestartPreventExitStatus=78\nRestartSec=10\n"
+            "TimeoutStopSec=45\nKillMode=control-group\n"
             "UMask=0077\nEnvironment=PYTHONUNBUFFERED=1\n\n[Install]\nWantedBy=default.target\n")
 
 
@@ -343,7 +346,7 @@ def read_state(data_dir):
     return state
 
 
-def check_team(state, *, live=True):
+def check_team(state, *, live=True, allow_legacy_gateway=False):
     root = Path(state["root"])
     pm = read_env(root / "profiles/media-pm/.env")
     ui = read_env(root / "profiles/media-uiux/.env")
@@ -360,6 +363,9 @@ def check_team(state, *, live=True):
         cfg = json.loads((profile / "config.yaml").read_text())
         env = read_env(profile / ".env")
         expected = profile_config(role, state["codex_model"], state["gemini_model"], state["owner"])
+        if allow_legacy_gateway and role == "pm" and "standalone" not in cfg.get("gateway", {}):
+            # Repair accepts exactly the old generated config, never arbitrary edits.
+            expected["gateway"].pop("standalone")
         if cfg != expected:
             raise TeamError(f"Konfigurasi media-{role} berubah dari manifest. Tinjau di VPS sebelum mulai.")
         expected_env = dict(line.split("=", 1) for line in profile_env(
@@ -375,6 +381,32 @@ def check_team(state, *, live=True):
         if telegram(pm["TELEGRAM_BOT_TOKEN"], "getWebhookInfo").get("url"):
             raise TeamError("Webhook aktif; gateway polling tidak boleh dinyalakan.")
     print("Enam profil, perutean provider, izin file, dan allowlist lolos pemeriksaan.")
+
+
+def repair_gateway(state):
+    """Upgrade an existing team without replacing keys, roles, tasks or sessions."""
+    data_dir = Path(state["data_dir"])
+    unit = unit_path()
+    expected_unit = unit_text(data_dir)
+    legacy_unit = expected_unit.replace("RestartPreventExitStatus=78\n", "")
+    if unit.is_symlink() or not unit.is_file() or unit.read_text() not in (expected_unit, legacy_unit):
+        raise TeamError("Unit media-hermes bukan unit installer yang dikenali. Tinjau di VPS; tidak ditimpa.")
+    controller = data_dir / "control.py"
+    if controller.is_symlink() or not controller.is_file():
+        raise TeamError("Controller tim hilang atau berupa symlink; perbaikan dibatalkan.")
+    check_team(state, live=False, allow_legacy_gateway=True)
+    # Stop only this team's supervisor before updating its runtime copy and config.
+    # Do not restart automatically: start will check provider/bot credentials first.
+    control("stop")
+    write_json(Path(state["root"]) / "profiles/media-pm/config.yaml",
+               profile_config("pm", state["codex_model"], state["gemini_model"], state["owner"]))
+    write_private(controller, Path(__file__).read_text())
+    write_private(unit, expected_unit)
+    run(["systemctl", "--user", "daemon-reload"], env=user_bus_env())
+    control("reset-failed")
+    check_team(state, live=False)
+    print("Gateway PM dan controller diperbarui; key, token, sesi, dan task tetap tersimpan.")
+    print("Jalankan `python3 scripts/hermes-team.py start`, lalu periksa log dan balasan Telegram.")
 
 
 def setup(args, data_dir):
@@ -448,7 +480,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, default=Path.home() / ".local/share/media-keycloud")
     parser.add_argument("command", choices=["setup", "check", "status", "start", "stop", "restart",
-                                             "logs", "board", "profiles", "rotate-keys", "_gateway"])
+                                             "logs", "board", "profiles", "rotate-keys",
+                                             "repair-gateway", "_gateway"])
     parser.add_argument("--no-start", action="store_true", help="setup saja: siapkan tanpa menyalakan bot")
     parser.add_argument("--offline", action="store_true", help="check saja: tanpa akses provider/Telegram")
     args = parser.parse_args()
@@ -473,11 +506,14 @@ def main():
                                     "--external-supervisor"], env)
     elif cmd == "check":
         check_team(state, live=not args.offline)
+    elif cmd == "repair-gateway":
+        repair_gateway(state)
     elif cmd in ("start", "restart"):
         assert_linger()
         check_team(state)
         run(["systemctl", "--user", "daemon-reload"], env=user_bus_env())
         run(["systemctl", "--user", "enable", SERVICE], env=user_bus_env())
+        control("reset-failed")
         print(control(cmd))
         print(control("is-active"))
     elif cmd == "stop":

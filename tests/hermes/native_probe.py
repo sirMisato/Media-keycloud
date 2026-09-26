@@ -1,4 +1,6 @@
 """Exercise native Hermes contracts without network/LLMs or a live gateway."""
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -41,8 +43,47 @@ def verify():
         assert tg.extra["allow_admin_from"] == ["7654321"]
     assert not any(c.enabled for p, c in gateway.platforms.items() if p != Platform.TELEGRAM)
     if role == "pm":
+        gateway_startup()
         kanban(workspace, cfg)
     print("NATIVE_OK", role)
+
+
+def gateway_startup():
+    """Reproduce exit 78 on the old config, then exercise the real startup guard."""
+    from hermes_cli import gateway as cli
+    from gateway.run import load_gateway_config_for_runner
+    from hermes_cli.profiles import profile_is_standalone
+    home = Path(os.environ["HERMES_HOME"])
+    path = home / "config.yaml"
+    original = path.read_text()
+    legacy = json.loads(original)
+    legacy["gateway"].pop("standalone")
+    # Only the host's service inventory is stubbed; the guard and config resolver
+    # are native. No real gateway is running in this temporary team home.
+    with patch.object(cli, "_is_service_installed", return_value=False), \
+         patch.object(cli, "_served_by_another_host_gateway", return_value=None), \
+         patch.object(cli, "named_profile_served_by_running_multiplexer", return_value=False):
+        try:
+            path.write_text(json.dumps(legacy))
+            with contextlib.redirect_stdout(io.StringIO()) as refusal:
+                try:
+                    cli._guard_named_profile_under_multiplexer()
+                except SystemExit as error:
+                    assert error.code == 78, error.code
+                else:
+                    raise AssertionError("Legacy PM must reproduce gateway exit 78")
+            assert "does not get a gateway of its own" in refusal.getvalue()
+        finally:
+            path.write_text(original)
+        assert profile_is_standalone(home)
+        cli._attach_to_host_gateway_or_guard()  # No --force or --replace.
+        resolved = load_gateway_config_for_runner()
+        assert resolved.multiplex_profiles is False
+        assert path.read_text() == original  # Startup must not rewrite the topology.
+        # The explicit opt-out must still refuse a duplicate live bot owner.
+        with patch.object(cli, "named_profile_served_by_running_multiplexer", return_value=True), \
+             contextlib.redirect_stdout(io.StringIO()):
+            assert cli._named_profile_refused_under_multiplexer() is True
 
 
 def kanban(workspace, cfg):
