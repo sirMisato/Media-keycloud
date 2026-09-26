@@ -60,6 +60,21 @@ sudo bash scripts/promote.sh mahad-media:COMMIT_SHA
 
 Lihat [panduan redaksi](docs/REDAKSI.md), [Hermes](docs/HERMES.md), [verifikasi](docs/VERIFIKASI.md). Persetujuan ilmiah dilakukan admin/manusia; aplikasi tidak menghasilkan fatwa otomatis.
 
+## Tim agen melalui Telegram
+
+Hermes mengoordinasikan enam profil: PM, UI/UX, Backend, QA/QC, Security, DevOps.
+Codex menangani PM/Backend/Security/DevOps; Gemini menangani UI/UX serta QA/QC.
+Paket memakai home dan antrean terpisah dari Hermes lama.
+
+```bash
+sudo loginctl enable-linger "$USER"
+python3 scripts/hermes-team.py setup
+```
+
+Jalankan Python sebagai user biasa. Siapkan API key baru serta bot khusus dari
+BotFather; installer meminta rahasia secara tersembunyi dan memverifikasi
+Telegram ID pemilik. [Panduan instalasi, perintah Telegram, dan diagnosis](docs/HERMES.md).
+
 ## Lisensi & aset
 
 Lisensi proyek mengikuti `LICENSE`. Laravel dan dependensinya memiliki lisensi masing-masing. Ilustrasi editorial bundled dibuat dengan AI; bukan foto lokasi Ma’had Aly, NU, atau Muhammadiyah. Artikel demo hanya untuk pengujian dan ditolak oleh seeder pada production. Tidak menyertakan logo, artikel, atau foto milik NU Online/Muhammadiyah.

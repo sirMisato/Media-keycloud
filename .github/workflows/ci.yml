@@ -6,6 +6,31 @@ on:
 permissions:
   contents: read
 jobs:
+  hermes-team:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Check Hermes installer without credentials
+        run: python -m unittest discover -s tests/hermes -p 'test_*.py' -v
+      - name: Check out pinned Hermes for native integration
+        uses: actions/checkout@v4
+        with:
+          repository: NousResearch/hermes-agent
+          ref: 11c50f05d070b2158afdca73f077d2501ecd77fc
+          path: .hermes-ci
+          persist-credentials: false
+      - name: Install isolated Hermes test runtime
+        run: |
+          python -m venv "$RUNNER_TEMP/hermes-test"
+          "$RUNNER_TEMP/hermes-test/bin/python" -m pip install './.hermes-ci[telegram]'
+      - name: Verify real profiles, provider routing, gateway config and Kanban worktrees
+        env:
+          MEDIA_HERMES_BIN: ${{ runner.temp }}/hermes-test/bin/hermes
+          MEDIA_HERMES_PYTHON: ${{ runner.temp }}/hermes-test/bin/python
+        run: python -m unittest discover -s tests/hermes -p 'test_*.py' -v
   caddy:
     runs-on: ubuntu-24.04
     steps:
