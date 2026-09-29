@@ -21,11 +21,11 @@ def verify():
     from hermes_cli.profiles import _get_profiles_root
     from gateway.config import load_gateway_config, Platform
 
-    role, workspace = sys.argv[1:]
+    role, workspace, mode = sys.argv[1:]
     cfg = load_config()
     runtime = resolve_runtime_provider(requested=cfg["model"]["provider"],
                                        target_model=cfg["model"]["default"])
-    google = role in ("uiux", "qa")
+    google = mode == "mixed" and role in ("uiux", "qa")
     assert runtime["provider"] == ("gemini" if google else "openai-api"), runtime["provider"]
     assert runtime["api_key"] == os.environ["GOOGLE_API_KEY" if google else "OPENAI_API_KEY"]
     assert runtime["base_url"] == cfg["model"]["base_url"]

@@ -63,13 +63,18 @@ Lihat [panduan redaksi](docs/REDAKSI.md), [Hermes](docs/HERMES.md), [verifikasi]
 ## Tim agen melalui Telegram
 
 Hermes mengoordinasikan enam profil: PM, UI/UX, Backend, QA/QC, Security, DevOps.
-Codex menangani PM/Backend/Security/DevOps; Gemini menangani UI/UX serta QA/QC.
+Keenam profil memakai Codex melalui OpenAI API, termasuk UI/UX serta QA/QC.
 Paket memakai home dan antrean terpisah dari Hermes lama.
 
 ```bash
 sudo loginctl enable-linger "$USER"
 python3 scripts/hermes-team.py setup
 ```
+
+Instalasi lama yang masih membagi tugas ke Gemini dapat dipindahkan dengan
+`python3 scripts/hermes-team.py use-codex`, lalu `start`. Perintah ini memakai
+model/key PM yang tersimpan dan mensyaratkan tidak ada worker aktif; lihat
+[panduan migrasi](docs/HERMES.md#mengganti-instalasi-lama-menjadi-semua-codex).
 
 Jalankan Python sebagai user biasa. Siapkan API key baru serta bot khusus dari
 BotFather; installer meminta rahasia secara tersembunyi dan memverifikasi

@@ -1,4 +1,4 @@
-# Enam profil Hermes + Gemini/Codex + Telegram
+# Enam profil Hermes + Codex + Telegram
 
 PM menerima perintah Telegram dan membagi pekerjaan melalui Kanban native
 Hermes kepada lima worker. Tiap profil memiliki model, instruksi, memori, dan
@@ -7,22 +7,57 @@ sesi sendiri. Memakai Hermes yang sudah ada; tidak perlu Codex CLI/OpenRouter.
 | Profil | Model awal | Tugas |
 |---|---|---|
 | `media-pm` | Codex / `gpt-5.3-codex` | Koordinasi, acceptance criteria, handoff, Telegram |
-| `media-uiux` | Gemini / `gemini-3.8-flash` | Rancangan, Blade/CSS/JS, responsif, aksesibilitas |
+| `media-uiux` | Codex / `gpt-5.3-codex` | Rancangan, Blade/CSS/JS, responsif, aksesibilitas |
 | `media-backend` | Codex / `gpt-5.3-codex` | Laravel, database, API, integrasi commit |
-| `media-qa` | Gemini / `gemini-3.8-flash` | Pengujian independen QA/QC |
+| `media-qa` | Codex / `gpt-5.3-codex` | Pengujian independen QA/QC |
 | `media-security` | Codex / `gpt-5.3-codex` | Review akses dan keamanan data |
 | `media-devops` | Codex / `gpt-5.3-codex` | Build, rilis, health check, backup |
 
 ID model dipilih saat setup dan harus tersedia bagi akun/proyek. Codex di sini
 memakai **OpenAI API berbayar**, provider Hermes `openai-api`, dan Responses API.
 Provider Hermes `openai-codex` adalah jalur OAuth langganan, bukan API key.
-Gemini memakai provider native `gemini` dan API Google AI Studio.
+Setup baru memakai Codex untuk semua profil. Konfigurasi Gemini pada instalasi
+lama tetap didukung sampai pemilik menjalankan migrasi di bawah.
+
+## Mengganti instalasi lama menjadi semua Codex
+
+Jalankan sebagai user pemasang Hermes, tanpa sudo, satu per satu setelah
+perintah sebelumnya berhasil:
+
+```bash
+cd ~/Media-keycloud
+git pull --ff-only origin main
+python3 scripts/hermes-team.py use-codex
+python3 scripts/hermes-team.py start
+python3 scripts/hermes-team.py models
+```
+
+`use-codex` mengambil **model Codex dan OpenAI API key dari profil PM yang
+sudah tersimpan**, lalu mengubah keenam profil ke provider `openai-api`.
+Migrasi memperbarui manifest dan controller service, memperbaiki konfigurasi
+standalone PM bila masih versi lama, menghapus key Gemini dari `.env` profil,
+serta menyesuaikan catatan model di SOUL.md. Token/allowlist Telegram,
+instruksi peran lokal, memori, sesi, dan task dipertahankan. Tidak meminta
+token/key baru dan tidak menghubungi Gemini. Semua biaya inference setelah
+migrasi mengikuti akun OpenAI API yang dipakai PM.
+
+Migrasi menghentikan gateway **media-hermes saja** untuk mencegah dispatch
+baru. Jika masih ada task `running`, konfigurasi belum diubah: tunggu worker
+menyelesaikan tugas, periksa `python3 scripts/hermes-team.py board`, lalu
+ulangi `use-codex`. Gateway tetap berhenti selama menunggu. Tidak membunuh
+worker atau otomatis menyalakan kembali gateway. Gunakan `start` setelah
+migrasi berhasil, lalu kirim smoke test baru melalui Telegram untuk menguji
+inference dan dispatch. `models` harus menampilkan `provider=openai-api`
+pada **keenam baris**; nama model mengikuti pilihan Codex saat setup lama.
+
+Perubahan file memakai penulisan atomik dan rollback dalam memori jika
+penulisan gagal; jangan mematikan VPS saat migrasi. Jika Git menolak pull
+karena perubahan lokal, selesaikan perubahan itu dahulu tanpa force-reset.
 
 ## Instalasi VPS
 
 1. Cabut key yang pernah dikirim di chat. Buat pengganti pada
-   [OpenAI](https://platform.openai.com/api-keys) dan
-   [Google AI Studio](https://aistudio.google.com/apikey).
+   [OpenAI](https://platform.openai.com/api-keys).
 2. Buka akun resmi [@BotFather](https://t.me/BotFather), jalankan `/newbot`,
    buat bot **khusus Media**, dan siapkan tokennya. Jangan memakai token bot
    Hermes lama karena dua poller akan bertabrakan.
@@ -39,7 +74,7 @@ Python dijalankan **tanpa sudo**. Linger menjaga user service/D-Bus tetap
 tersedia setelah SSH putus dan reboot, termasuk scope worker. Jika checkout
 bukan pada `main`, periksa `git status` dahulu; jangan force-reset perubahan.
 
-Installer meminta model, dua key baru (input tersembunyi), dan token bot.
+Installer meminta model Codex, OpenAI API key (input tersembunyi), dan token bot.
 Kirim kode sekali pakai `MEDIA-...` yang ditampilkan installer ke chat **privat**
 bot baru, lalu tekan Enter di SSH. Telegram ID diambil dari pesan yang cocok;
 tidak perlu mengirim key/token/ID ke ChatGPT. Akses group dinonaktifkan.
@@ -68,7 +103,7 @@ false` saja tidak cukup pada Hermes sekarang. Hanya PM menjalankan gateway.
 
 ## Perintah Telegram
 
-Kirim pesan biasa `Status tim`, lalu uji kedua provider dan kelima worker:
+Kirim pesan biasa `Status tim`, lalu uji Codex pada keenam profil:
 
 ```text
 Jalankan smoke test enam profil. PM membuat lima task ringan untuk UI/UX,
@@ -133,6 +168,7 @@ Tes yang terhalang akses/dependensi harus dilaporkan, bukan dianggap PASS.
 cd ~/Media-keycloud
 python3 scripts/hermes-team.py status
 python3 scripts/hermes-team.py profiles
+python3 scripts/hermes-team.py models
 python3 scripts/hermes-team.py board
 python3 scripts/hermes-team.py check
 python3 scripts/hermes-team.py logs
@@ -230,6 +266,9 @@ python3 scripts/hermes-team.py rotate-keys
 python3 scripts/hermes-team.py restart
 ```
 
+Pada mode semua Codex, `rotate-keys` hanya meminta satu OpenAI API key dan
+memperbaruinya pada keenam profil. Instalasi lama yang belum dimigrasi masih
+meminta dua key sesuai pemetaan lamanya.
 Tidak membuat backup key lama. Cabut key lama pada konsol provider. Untuk
 rotasi token **bot yang sama**, gunakan BotFather, hentikan tim, edit hanya
 `TELEGRAM_BOT_TOKEN` dalam `.env` profil PM di VPS; pertahankan format string
@@ -247,6 +286,10 @@ Tes kontrak native dijalankan bila `MEDIA_HERMES_BIN` menunjuk CLI Hermes dan
 kredensial dummy, tanpa inference atau bot live. CI memin source Hermes.
 Tes native mereproduksi penolakan 78 dengan konfigurasi lama dan memastikan
 PM hasil perbaikan lolos pemeriksaan startup serta tetap tidak multiplex.
+Tes juga memigrasikan profil lama memakai CLI Kanban asli dan memeriksa
+keenam runtime memakai OpenAI API dengan mode `codex_responses`, tanpa
+inference berbayar. Regresi mencakup worker aktif, rollback penulisan gagal,
+preservasi bot/riwayat/instruksi lokal, dan rotasi key tanpa Gemini.
 
 Rujukan primer, diperiksa 26 September 2026:
 

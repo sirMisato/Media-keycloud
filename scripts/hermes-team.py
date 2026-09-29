@@ -148,11 +148,14 @@ def ask_secret(label):
 def check_models(openai_key, gemini_key, codex_model, gemini_model):
     oa = api_json("https://api.openai.com/v1/models/" + model_id(codex_model),
                   "OpenAI", headers={"Authorization": "Bearer " + openai_key})
-    gm = api_json("https://generativelanguage.googleapis.com/v1beta/models/" + model_id(gemini_model),
-                  "Gemini", headers={"x-goog-api-key": gemini_key})
-    if oa.get("id") != codex_model or "generateContent" not in gm.get("supportedGenerationMethods", []):
+    if oa.get("id") != codex_model:
         raise TeamError("Model yang dipilih tidak lolos pemeriksaan metadata provider.")
-    print("Akses metadata OpenAI dan Gemini valid. Inference/billing diuji melalui chat setelah aktif.")
+    if gemini_model:
+        gm = api_json("https://generativelanguage.googleapis.com/v1beta/models/" + model_id(gemini_model),
+                      "Gemini", headers={"x-goog-api-key": gemini_key})
+        if "generateContent" not in gm.get("supportedGenerationMethods", []):
+            raise TeamError("Model Gemini tidak lolos pemeriksaan metadata provider.")
+    print("Akses metadata provider valid. Inference/billing diuji melalui chat setelah aktif.")
 
 
 def telegram(token, method, body=None):
@@ -207,8 +210,16 @@ def paired_user(updates, challenge):
     return None
 
 
-def profile_config(role, codex_model, gemini_model, owner):
-    google = role in ("uiux", "qa")
+def model_mode(state):
+    # Existing schema-1 installs remain mixed until explicitly migrated.
+    mode = state.get("model_mode", "mixed")
+    if mode not in ("mixed", "codex"):
+        raise TeamError("Mode model dalam manifest tidak dikenali.")
+    return mode
+
+
+def profile_config(role, codex_model, gemini_model, owner, *, mode="mixed"):
+    google = mode == "mixed" and role in ("uiux", "qa")
     pm = role == "pm"
     tools = ["kanban", "memory", "todo"] if pm else ["terminal", "file", "kanban", "todo"]
     if role in ("uiux", "qa"):
@@ -241,13 +252,13 @@ def profile_config(role, codex_model, gemini_model, owner):
     }
 
 
-def profile_env(role, root, credentials, owner):
+def profile_env(role, root, credentials, owner, *, mode="mixed"):
     values = {"HERMES_KANBAN_HOME": str(root), "HERMES_KANBAN_BOARD": BOARD,
               "HERMES_REDACT_SECRETS": "true", "GATEWAY_ALLOW_ALL_USERS": "false",
               "GATEWAY_ALLOWED_USERS": "", "TELEGRAM_ALLOW_ALL_USERS": "false",
               "TELEGRAM_ALLOW_BOTS": "false", "TELEGRAM_GROUP_ALLOWED_USERS": "",
               "TELEGRAM_GROUP_ALLOWED_CHATS": ""}
-    if role in ("uiux", "qa"):
+    if mode == "mixed" and role in ("uiux", "qa"):
         values["GOOGLE_API_KEY"] = credentials["gemini"]
     else:
         values["OPENAI_API_KEY"] = credentials["openai"]
@@ -256,15 +267,23 @@ def profile_env(role, root, credentials, owner):
     return "".join(f"{key}={json.dumps(value)}\n" for key, value in values.items())
 
 
+def config_for(role, state):
+    return profile_config(role, state["codex_model"], state.get("gemini_model", ""),
+                          state["owner"], mode=model_mode(state))
+
+
+def model_note(role, state):
+    model = config_for(role, state)["model"]
+    return f"Konfigurasi awal: provider {model['provider']}, model {model['default']}.\n"
+
+
 def render_soul(repo, role, state):
     roles = repo / "hermes" / "roles"
     text = (roles / "common.md").read_text() + "\n\n" + (roles / f"{role}.md").read_text()
     for name, value in {"DEPLOY_REPO": state["deploy_repo"], "WORKSPACE": state["workspace"],
                         "DATA_DIR": state["data_dir"]}.items():
         text = text.replace("@@" + name + "@@", value)
-    google = role in ("uiux", "qa")
-    return text + f"\nKonfigurasi awal: provider {'gemini' if google else 'openai-api'}, model " + (
-        state["gemini_model"] if google else state["codex_model"]) + ".\n"
+    return text + "\n" + model_note(role, state)
 
 
 def unit_text(data_dir):
@@ -319,9 +338,9 @@ def install_profiles(repo, state, credentials):
         if not profile.is_dir():
             raise TeamError("Versi Hermes tidak menempatkan profil pada home tim. Hentikan setup.")
         os.chmod(profile, 0o700)
-        write_json(profile / "config.yaml", profile_config(role, state["codex_model"],
-                                                           state["gemini_model"], state["owner"]))
-        write_private(profile / ".env", profile_env(role, root, credentials, state["owner"]))
+        write_json(profile / "config.yaml", config_for(role, state))
+        write_private(profile / ".env", profile_env(role, root, credentials, state["owner"],
+                                                    mode=model_mode(state)))
         write_private(profile / "SOUL.md", render_soul(repo, role, state))
         print(f"Profil {name} ({label}) siap.")
 
@@ -348,10 +367,12 @@ def read_state(data_dir):
 
 def check_team(state, *, live=True, allow_legacy_gateway=False):
     root = Path(state["root"])
+    mixed = model_mode(state) == "mixed"
     pm = read_env(root / "profiles/media-pm/.env")
-    ui = read_env(root / "profiles/media-uiux/.env")
-    credentials = {"openai": pm.get("OPENAI_API_KEY", ""), "gemini": ui.get("GOOGLE_API_KEY", ""),
+    credentials = {"openai": pm.get("OPENAI_API_KEY", ""),
                    "telegram": pm.get("TELEGRAM_BOT_TOKEN", "")}
+    if mixed:
+        credentials["gemini"] = read_env(root / "profiles/media-uiux/.env").get("GOOGLE_API_KEY", "")
     if not all(credentials.values()) or not re.fullmatch(r"[1-9][0-9]*", state["owner"]):
         raise TeamError("Kredensial/pemilik pada profil tidak lengkap.")
     for role in ROLES:
@@ -362,19 +383,19 @@ def check_team(state, *, live=True, allow_legacy_gateway=False):
                 raise TeamError(f"File profil media-{role}/{filename} hilang atau izin bukan privat.")
         cfg = json.loads((profile / "config.yaml").read_text())
         env = read_env(profile / ".env")
-        expected = profile_config(role, state["codex_model"], state["gemini_model"], state["owner"])
+        expected = config_for(role, state)
         if allow_legacy_gateway and role == "pm" and "standalone" not in cfg.get("gateway", {}):
             # Repair accepts exactly the old generated config, never arbitrary edits.
             expected["gateway"].pop("standalone")
         if cfg != expected:
             raise TeamError(f"Konfigurasi media-{role} berubah dari manifest. Tinjau di VPS sebelum mulai.")
         expected_env = dict(line.split("=", 1) for line in profile_env(
-            role, root, credentials, state["owner"]).splitlines())
+            role, root, credentials, state["owner"], mode=model_mode(state)).splitlines())
         if env != {key: json.loads(value) for key, value in expected_env.items()}:
             raise TeamError(f"Kredensial/allowlist media-{role} tidak cocok dengan konfigurasi tim.")
     if live:
-        check_models(pm["OPENAI_API_KEY"], ui["GOOGLE_API_KEY"],
-                     state["codex_model"], state["gemini_model"])
+        check_models(pm["OPENAI_API_KEY"], credentials.get("gemini", ""),
+                     state["codex_model"], state["gemini_model"] if mixed else "")
         bot = telegram(pm["TELEGRAM_BOT_TOKEN"], "getMe")
         if bot.get("username") != state["bot_username"]:
             raise TeamError("Identitas bot berbeda dari manifest pemasangan.")
@@ -383,8 +404,8 @@ def check_team(state, *, live=True, allow_legacy_gateway=False):
     print("Enam profil, perutean provider, izin file, dan allowlist lolos pemeriksaan.")
 
 
-def repair_gateway(state):
-    """Upgrade an existing team without replacing keys, roles, tasks or sessions."""
+def managed_unit(state):
+    """Require a known supervisor before any maintenance touches it."""
     data_dir = Path(state["data_dir"])
     unit = unit_path()
     expected_unit = unit_text(data_dir)
@@ -394,19 +415,96 @@ def repair_gateway(state):
     controller = data_dir / "control.py"
     if controller.is_symlink() or not controller.is_file():
         raise TeamError("Controller tim hilang atau berupa symlink; perbaikan dibatalkan.")
+    return unit
+
+
+def repair_gateway(state):
+    """Upgrade an existing team without replacing keys, roles, tasks or sessions."""
+    data_dir = Path(state["data_dir"])
+    unit = managed_unit(state)
     check_team(state, live=False, allow_legacy_gateway=True)
     # Stop only this team's supervisor before updating its runtime copy and config.
     # Do not restart automatically: start will check provider/bot credentials first.
     control("stop")
-    write_json(Path(state["root"]) / "profiles/media-pm/config.yaml",
-               profile_config("pm", state["codex_model"], state["gemini_model"], state["owner"]))
-    write_private(controller, Path(__file__).read_text())
-    write_private(unit, expected_unit)
+    write_json(Path(state["root"]) / "profiles/media-pm/config.yaml", config_for("pm", state))
+    write_private(data_dir / "control.py", Path(__file__).read_text())
+    write_private(unit, unit_text(data_dir))
     run(["systemctl", "--user", "daemon-reload"], env=user_bus_env())
     control("reset-failed")
     check_team(state, live=False)
     print("Gateway PM dan controller diperbarui; key, token, sesi, dan task tetap tersimpan.")
     print("Jalankan `python3 scripts/hermes-team.py start`, lalu periksa log dan balasan Telegram.")
+
+
+def show_models(state):
+    for role in ROLES:
+        path = Path(state["root"]) / "profiles" / ("media-" + role) / "config.yaml"
+        model = json.loads(path.read_text())["model"]
+        print(f"media-{role}: provider={model['provider']}, model={model['default']}")
+
+
+def assert_workers_idle(state):
+    output = run([state["hermes"], "-p", "media-pm", "kanban", "--board", BOARD,
+                  "list", "--status", "running", "--json"],
+                 env=isolated_env(Path(state["root"])), cwd=state["workspace"])
+    tasks = json.loads(output)
+    if not isinstance(tasks, list):
+        raise TeamError("Status worker tidak dapat dipastikan; konfigurasi model belum diubah.")
+    if tasks:
+        raise TeamError("Masih ada task running. Gateway tim sudah dihentikan agar tidak mengambil task baru. "
+                        "Tunggu worker selesai, periksa board, lalu ulangi use-codex. Model belum diubah.")
+
+
+def use_codex(state):
+    """Migrate the installed team using its existing PM model and API key."""
+    data_dir, root = Path(state["data_dir"]), Path(state["root"])
+    unit = managed_unit(state)
+    check_team(state, live=False, allow_legacy_gateway=True)
+    pm = read_env(root / "profiles/media-pm/.env")
+    credentials = {"openai": pm["OPENAI_API_KEY"], "telegram": pm["TELEGRAM_BOT_TOKEN"]}
+    # Gemini is deliberately not contacted, even if its old key has expired.
+    check_models(credentials["openai"], "", state["codex_model"], "")
+    control("stop")
+    assert_workers_idle(state)
+    updated = {**state, "model_mode": "codex"}
+    updated.pop("gemini_model", None)
+    changes = {}
+    for role in ROLES:
+        profile = root / "profiles" / ("media-" + role)
+        changes[profile / "config.yaml"] = json.dumps(config_for(role, updated), indent=2) + "\n"
+        changes[profile / ".env"] = profile_env(role, root, credentials, state["owner"], mode="codex")
+        # Preserve local role edits; replace only the installer's model note.
+        soul = (profile / "SOUL.md").read_text()
+        lines = [line for line in soul.splitlines() if not line.startswith("Konfigurasi awal: provider ")]
+        changes[profile / "SOUL.md"] = "\n".join(lines).rstrip() + "\n\n" + model_note(role, updated)
+    changes[data_dir / "control.py"] = Path(__file__).read_text()
+    changes[unit] = unit_text(data_dir)
+    changes[data_dir / "team.json"] = json.dumps(updated, indent=2) + "\n"
+    # In-memory rollback avoids leaving a second copy of API keys on disk.
+    for path in changes:
+        if path.is_symlink() or not path.is_file():
+            raise TeamError("File tim hilang atau berupa symlink; migrasi dibatalkan.")
+    originals = {path: path.read_text() for path in changes}
+    written = []
+    try:
+        for path, content in changes.items():
+            written.append(path)
+            write_private(path, content)
+        check_team(updated, live=False)
+    except (Exception, KeyboardInterrupt):
+        restored = True
+        for path in reversed(written):
+            try:
+                write_private(path, originals[path])
+            except Exception:
+                restored = False
+        detail = "Konfigurasi sebelumnya dipulihkan." if restored else "Pemulihan belum lengkap; periksa file tim di VPS."
+        raise TeamError("Migrasi gagal. " + detail + " Gateway tetap berhenti.") from None
+    run(["systemctl", "--user", "daemon-reload"], env=user_bus_env())
+    control("reset-failed")
+    show_models(updated)
+    print("Enam profil memakai Codex. Token Telegram, role, memori, sesi, dan task dipertahankan.")
+    print("Jalankan `python3 scripts/hermes-team.py start`, lalu kirim smoke test baru di Telegram.")
 
 
 def setup(args, data_dir):
@@ -431,15 +529,13 @@ def setup(args, data_dir):
         capabilities(hermes, Path(temp))
     print("Gunakan kunci BARU yang sudah dirotasi, serta bot Telegram khusus Media.")
     codex = model_id(input(f"Model Codex [{DEFAULT_CODEX}]: ").strip() or DEFAULT_CODEX)
-    gemini = model_id(input(f"Model Gemini [{DEFAULT_GEMINI}]: ").strip() or DEFAULT_GEMINI)
-    credentials = {"openai": ask_secret("OpenAI API key baru"),
-                   "gemini": ask_secret("Gemini API key baru")}
-    check_models(credentials["openai"], credentials["gemini"], codex, gemini)
+    credentials = {"openai": ask_secret("OpenAI API key baru")}
+    check_models(credentials["openai"], "", codex, "")
     credentials["telegram"] = ask_secret("Token bot Telegram dari BotFather")
     owner, username = pair_bot(credentials["telegram"])
     state = {"schema": 1, "data_dir": str(data_dir), "root": str(data_dir / "hermes"),
              "workspace": str(data_dir / "workspace"), "deploy_repo": str(repo),
-             "hermes": hermes, "codex_model": codex, "gemini_model": gemini,
+             "hermes": hermes, "codex_model": codex, "model_mode": "codex",
              "owner": owner, "bot_username": username}
     data_dir.mkdir(parents=True, mode=0o700)
     write_json(data_dir / "installing.json", {"schema": 1, "deploy_repo": str(repo)})
@@ -481,20 +577,23 @@ def main():
     parser.add_argument("--data-dir", type=Path, default=Path.home() / ".local/share/media-keycloud")
     parser.add_argument("command", choices=["setup", "check", "status", "start", "stop", "restart",
                                              "logs", "board", "profiles", "rotate-keys",
-                                             "repair-gateway", "_gateway"])
+                                             "repair-gateway", "use-codex", "models", "_gateway"])
     parser.add_argument("--no-start", action="store_true", help="setup saja: siapkan tanpa menyalakan bot")
     parser.add_argument("--offline", action="store_true", help="check saja: tanpa akses provider/Telegram")
     args = parser.parse_args()
     if os.geteuid() == 0:
         raise TeamError("Jalankan sebagai user pemilik Hermes (misalnya ubuntu), tanpa sudo.")
     data_dir = args.data_dir.expanduser().resolve()
-    if args.command == "setup":
+    if args.command in ("setup", "use-codex"):
         # Serialize installers, without creating the final directory before preflight.
         lock_dir = Path.home() / ".cache/media-keycloud"
         lock_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         with (lock_dir / "setup.lock").open("w") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            setup(args, data_dir)
+            if args.command == "setup":
+                setup(args, data_dir)
+            else:
+                use_codex(read_state(data_dir))
         return
     state = read_state(data_dir)
     env = isolated_env(Path(state["root"]))
@@ -508,6 +607,8 @@ def main():
         check_team(state, live=not args.offline)
     elif cmd == "repair-gateway":
         repair_gateway(state)
+    elif cmd == "models":
+        show_models(state)
     elif cmd in ("start", "restart"):
         assert_linger()
         check_team(state)
@@ -533,15 +634,20 @@ def main():
     elif cmd == "rotate-keys":
         if not sys.stdin.isatty():
             raise TeamError("Rotasi harus lewat terminal interaktif.")
-        credentials = {"openai": ask_secret("OpenAI API key baru"), "gemini": ask_secret("Gemini API key baru")}
-        check_models(credentials["openai"], credentials["gemini"], state["codex_model"], state["gemini_model"])
+        mixed = model_mode(state) == "mixed"
+        credentials = {"openai": ask_secret("OpenAI API key baru")}
+        if mixed:
+            credentials["gemini"] = ask_secret("Gemini API key baru")
+        check_models(credentials["openai"], credentials.get("gemini", ""),
+                     state["codex_model"], state["gemini_model"] if mixed else "")
         # Do not copy old keys into backup files. Running workers retain their old
         # environment: operator should drain/stop tasks before rotation.
         for role in ROLES:
             path = Path(state["root"]) / "profiles" / ("media-" + role) / ".env"
             current = read_env(path)
-            key = "GOOGLE_API_KEY" if role in ("uiux", "qa") else "OPENAI_API_KEY"
-            current[key] = credentials["gemini" if role in ("uiux", "qa") else "openai"]
+            google = mixed and role in ("uiux", "qa")
+            key = "GOOGLE_API_KEY" if google else "OPENAI_API_KEY"
+            current[key] = credentials["gemini" if google else "openai"]
             write_private(path, "".join(f"{k}={json.dumps(v)}\n" for k, v in current.items()))
         print("Key diganti. Jalankan restart; worker lama perlu diselesaikan/dihentikan sebelum memakai key baru.")
 

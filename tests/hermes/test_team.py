@@ -66,6 +66,134 @@ else:
             team.install_profiles(REPO, self.state, CREDS)
         return root
 
+    def installed_team(self):
+        root = self.profiles()
+        data_dir = Path(self.state["data_dir"])
+        Path(self.state["workspace"]).mkdir()
+        team.write_json(data_dir / "team.json", self.state)
+        team.write_private(data_dir / "control.py", "# previous controller\n")
+        unit = self.base / "units/media-hermes.service"
+        team.write_private(unit, team.unit_text(data_dir))
+        return root, unit
+
+    def test_codex_metadata_check_never_contacts_gemini(self):
+        with mock.patch.object(team, "api_json", return_value={"id": team.DEFAULT_CODEX}) as api, \
+             contextlib.redirect_stdout(io.StringIO()):
+            team.check_models(CREDS["openai"], "", team.DEFAULT_CODEX, "")
+        api.assert_called_once()
+        self.assertTrue(api.call_args.args[0].startswith("https://api.openai.com/"))
+
+    def test_use_codex_preserves_bot_roles_history_and_selected_model(self):
+        self.state["codex_model"] = "gpt-5.3-codex-fixture"
+        root, unit = self.installed_team()
+        data_dir = Path(self.state["data_dir"])
+        pm_env = (root / "profiles/media-pm/.env").read_bytes()
+        pm_config = root / "profiles/media-pm/config.yaml"
+        legacy = json.loads(pm_config.read_text())
+        legacy["gateway"].pop("standalone")
+        team.write_json(pm_config, legacy)
+        for role in team.ROLES:
+            path = root / "profiles" / ("media-" + role) / "SOUL.md"
+            path.write_text(path.read_text() + "\nInstruksi lokal pemilik tetap ada.\n")
+        retained = root / "profiles/media-uiux/memories/keep"
+        team.write_private(retained, "existing memory\n")
+        tasks = root / "kanban/keep"
+        team.write_private(tasks, "existing task history\n")
+        def run(args, **kwargs):
+            return "[]" if args[0] == self.state["hermes"] else ""
+        with mock.patch.object(team, "unit_path", return_value=unit), \
+             mock.patch.object(team, "control") as control, \
+             mock.patch.object(team, "run", side_effect=run), \
+             mock.patch.object(team, "check_models") as models, \
+             contextlib.redirect_stdout(io.StringIO()) as output:
+            for _ in range(2):
+                team.use_codex(team.read_state(data_dir))
+            migrated = team.read_state(data_dir)
+            team.check_team(migrated, live=False)
+        self.assertEqual(migrated["model_mode"], "codex")
+        self.assertNotIn("gemini_model", migrated)
+        self.assertEqual(control.call_args_list, [mock.call("stop"), mock.call("reset-failed")] * 2)
+        models.assert_called_with(CREDS["openai"], "", "gpt-5.3-codex-fixture", "")
+        self.assertEqual((root / "profiles/media-pm/.env").read_bytes(), pm_env)
+        self.assertEqual(retained.read_text(), "existing memory\n")
+        self.assertEqual(tasks.read_text(), "existing task history\n")
+        for role in team.ROLES:
+            profile = root / "profiles" / ("media-" + role)
+            cfg = json.loads((profile / "config.yaml").read_text())
+            self.assertEqual(cfg["model"]["provider"], "openai-api")
+            self.assertEqual(cfg["model"]["default"], "gpt-5.3-codex-fixture")
+            env = team.read_env(profile / ".env")
+            self.assertNotIn("GOOGLE_API_KEY", env)
+            self.assertEqual(env["OPENAI_API_KEY"], CREDS["openai"])
+            self.assertEqual(bool(env["TELEGRAM_BOT_TOKEN"]), role == "pm")
+            soul = (profile / "SOUL.md").read_text()
+            self.assertIn("Instruksi lokal pemilik tetap ada.", soul)
+            self.assertEqual(soul.count("Konfigurasi awal: provider "), 1)
+            self.assertNotIn("provider gemini", soul)
+            for name in ("config.yaml", ".env", "SOUL.md"):
+                self.assertEqual((profile / name).stat().st_mode & 0o777, 0o600)
+        for value in CREDS.values():
+            self.assertNotIn(value, output.getvalue())
+        self.assertEqual((data_dir / "control.py").read_bytes(), (REPO / "scripts/hermes-team.py").read_bytes())
+
+    def test_codex_key_rotation_only_requests_openai_and_updates_all_roles(self):
+        self.state["model_mode"] = "codex"
+        self.state.pop("gemini_model")
+        root, _unit = self.installed_team()
+        replacement = "TEST_ONLY_REPLACEMENT_OPENAI_KEY_123456789"
+        with mock.patch.object(team.os, "geteuid", return_value=1000), \
+             mock.patch.object(team.sys, "argv", ["hermes-team.py", "--data-dir", self.state["data_dir"], "rotate-keys"]), \
+             mock.patch.object(team.sys.stdin, "isatty", return_value=True), \
+             mock.patch.object(team, "ask_secret", return_value=replacement) as ask, \
+             mock.patch.object(team, "check_models") as models, \
+             contextlib.redirect_stdout(io.StringIO()) as output:
+            team.main()
+            team.check_team(self.state, live=False)
+        ask.assert_called_once_with("OpenAI API key baru")
+        models.assert_called_once_with(replacement, "", team.DEFAULT_CODEX, "")
+        for role in team.ROLES:
+            env = team.read_env(root / "profiles" / ("media-" + role) / ".env")
+            self.assertEqual(env["OPENAI_API_KEY"], replacement)
+            self.assertNotIn("GOOGLE_API_KEY", env)
+        self.assertNotIn(replacement, output.getvalue())
+
+    def test_use_codex_blocks_running_tasks_without_changing_files(self):
+        root, unit = self.installed_team()
+        before = {p: p.read_bytes() for p in self.base.rglob("*") if p.is_file()}
+        with mock.patch.object(team, "unit_path", return_value=unit), \
+             mock.patch.object(team, "control") as control, \
+             mock.patch.object(team, "check_models"), \
+             mock.patch.object(team, "run", return_value='[{"id":"t_fixture","status":"running"}]'), \
+             contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(team.TeamError, "Masih ada task running"):
+                team.use_codex(self.state)
+        control.assert_called_once_with("stop")
+        for path, value in before.items():
+            self.assertEqual(path.read_bytes(), value)
+
+    def test_use_codex_rolls_back_partial_write_failure(self):
+        root, unit = self.installed_team()
+        before = {p: p.read_bytes() for p in self.base.rglob("*") if p.is_file()}
+        original_write = team.write_private
+        fail_once = [True]
+        def write(path, value, **kwargs):
+            if fail_once[0] and str(path).endswith("media-uiux/.env"):
+                fail_once[0] = False
+                raise OSError("fixture write failure")
+            original_write(path, value, **kwargs)
+        with mock.patch.object(team, "unit_path", return_value=unit), \
+             mock.patch.object(team, "control") as control, \
+             mock.patch.object(team, "check_models"), \
+             mock.patch.object(team, "run", return_value="[]"), \
+             mock.patch.object(team, "write_private", side_effect=write), \
+             contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(team.TeamError, "Konfigurasi sebelumnya dipulihkan"):
+                team.use_codex(self.state)
+            team.check_team(team.read_state(Path(self.state["data_dir"])), live=False)
+        control.assert_called_once_with("stop")
+        for path, value in before.items():
+            self.assertEqual(path.read_bytes(), value, str(path))
+
     def test_pairing_only_proves_matching_private_human(self):
         def update(chat_type="private", bot=False, text="MEDIA-random", chat_id=7654321):
             return {"message": {"text": text, "from": {"id": 7654321, "is_bot": bot},
@@ -241,12 +369,19 @@ else:
              mock.patch.object(team, "capabilities"), \
              mock.patch.object(team, "check_models"), \
              mock.patch.object(team, "pair_bot", return_value=("7654321", "offline_fixture_bot")), \
-             mock.patch.object(team, "ask_secret", side_effect=list(CREDS.values())), \
+             mock.patch.object(team, "ask_secret", side_effect=[CREDS["openai"], CREDS["telegram"]]) as secrets, \
              mock.patch("builtins.input", return_value=""), \
              mock.patch.dict(os.environ, {"HOME": str(self.base / "home")}), \
              contextlib.redirect_stdout(io.StringIO()):
             team.setup(type("Args", (), {"no_start": True})(), Path(self.state["data_dir"]))
         state = team.read_state(Path(self.state["data_dir"]))
+        self.assertEqual(state["model_mode"], "codex")
+        self.assertNotIn("gemini_model", state)
+        self.assertEqual(secrets.call_count, 2)
+        for role in team.ROLES:
+            profile = Path(state["root"]) / "profiles" / ("media-" + role)
+            self.assertEqual(json.loads((profile / "config.yaml").read_text())["model"]["provider"], "openai-api")
+            self.assertNotIn("GOOGLE_API_KEY", team.read_env(profile / ".env"))
         self.assertFalse((Path(state["workspace"]) / ".env").exists())
         self.assertFalse((Path(state["workspace"]) / ".deploy").exists())
         self.assertEqual((legacy / "config.yaml").read_text(), "keep old Hermes config\n")
@@ -261,6 +396,12 @@ else:
                      "Set MEDIA_HERMES_BIN and MEDIA_HERMES_PYTHON for native integration")
 class NativeHermesTests(unittest.TestCase):
     def test_native_profiles_providers_gateway_and_kanban(self):
+        self.exercise_native(migrate=False)
+
+    def test_native_all_codex_migration_and_runtime(self):
+        self.exercise_native(migrate=True)
+
+    def exercise_native(self, *, migrate):
         with tempfile.TemporaryDirectory(prefix="media-native-") as tmp:
             base = Path(tmp)
             state = make_state(base, os.environ["MEDIA_HERMES_BIN"])
@@ -276,10 +417,26 @@ class NativeHermesTests(unittest.TestCase):
             env = team.isolated_env(root)
             team.run([state["hermes"], "-p", "media-pm", "kanban", "boards", "create", team.BOARD,
                       "--default-workdir", state["workspace"]], env=env, cwd=state["workspace"])
+            if migrate:
+                team.write_json(base / "team.json", state)
+                team.write_private(base / "control.py", "# old controller\n")
+                unit = base / "units/media-hermes.service"
+                team.write_private(unit, team.unit_text(base))
+                native_run = team.run
+                def run(args, **kwargs):
+                    return "" if args[0] == "systemctl" else native_run(args, **kwargs)
+                with mock.patch.object(team, "unit_path", return_value=unit), \
+                     mock.patch.object(team, "control"), \
+                     mock.patch.object(team, "check_models"), \
+                     mock.patch.object(team, "run", side_effect=run), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    team.use_codex(state)
+                state = team.read_state(base)
+                self.assertEqual(state["model_mode"], "codex")
             probe = REPO / "tests/hermes/native_probe.py"
             for role in team.ROLES:
                 env["HERMES_HOME"] = str(root / "profiles" / ("media-" + role))
-                result = team.run([os.environ["MEDIA_HERMES_PYTHON"], probe, role, state["workspace"]],
+                result = team.run([os.environ["MEDIA_HERMES_PYTHON"], probe, role, state["workspace"], team.model_mode(state)],
                                   env=env, cwd=state["workspace"], timeout=120)
                 self.assertIn("NATIVE_OK", result)
 
