@@ -3,6 +3,7 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\{PublicController,AuthController,DeskController,AdminController};
 Route::get('/',[PublicController::class,'home'])->name('home');
 Route::get('/artikel',[PublicController::class,'index'])->name('articles');
+Route::get('/profil-mahad-aly',fn () => view('public.institution'))->name('institution');
 Route::get('/kanal/{slug}',[PublicController::class,'index'])->name('channel');
 Route::get('/baca/{slug}',[PublicController::class,'article'])->name('article');
 Route::get('/halaman/{page}',[PublicController::class,'page'])->name('page');

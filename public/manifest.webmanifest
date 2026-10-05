@@ -1,1 +1,47 @@
-{"id":"/","name":"Ma’had Aly Situbondo","short_name":"Ma’had Aly","description":"Kajian fiqih kontemporer dan media Islam dari Situbondo","lang":"id","start_url":"/","scope":"/","display":"standalone","background_color":"#fafbf8","theme_color":"#123b2d","icons":[{"src":"/icons/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any"},{"src":"/icons/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any maskable"}]}
+{
+  "id": "/",
+  "name": "Media Ma’had Aly Situbondo",
+  "short_name": "Ma’had Aly",
+  "description": "Fiqih kontemporer, khazanah pesantren, dan pendidikan Ma’had Aly Situbondo",
+  "lang": "id",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#fafbf8",
+  "theme_color": "#123b2d",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": [
+    "news",
+    "education"
+  ],
+  "shortcuts": [
+    {
+      "name": "Warta & gagasan",
+      "short_name": "Artikel",
+      "url": "/artikel"
+    },
+    {
+      "name": "Fiqih kontemporer",
+      "short_name": "Fiqih",
+      "url": "/kanal/fiqih-kontemporer"
+    },
+    {
+      "name": "Profil pendidikan Ma’had Aly",
+      "short_name": "Profil",
+      "url": "/profil-mahad-aly"
+    }
+  ]
+}

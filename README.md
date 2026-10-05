@@ -26,13 +26,14 @@ Login redaksi: `/masuk`. Admin menambah kontributor melalui **Kontributor → Ta
 
 ## Kemampuan
 
-- Portal, kanal, pencarian, artikel, metadata sosial, sitemap, dan layout ponsel.
+- Portal dengan navigasi bawah di ponsel, kanal geser, pencarian cepat, artikel, metadata sosial, dan sitemap.
+- Profil pendidikan Ma’had Aly di `/profil-mahad-aly`, takhassus fikih–usul fikih, dan tautan kanal resmi lembaga.
 - Editor Markdown dengan teks Arab, pratinjau privat, sampul privat, dan rujukan.
 - Draf → review → permintaan revisi / penolakan / terbit / jadwal tayang.
 - Revisi artikel tayang dibuat sebagai versi baru; versi publik tidak berubah sebelum disetujui.
 - Hak akses admin/kontributor, penonaktifan akun, ganti/reset password, dan jejak keputusan.
 - Identitas media, logo, email kontak, dan susunan redaksi dapat diubah admin.
-- Manifest PWA, ikon, pemasangan pada browser yang mendukung, dan fallback offline. Draf dan halaman redaksi tidak dicache; pekerjaan redaksi tetap memerlukan internet.
+- Manifest PWA dengan pintasan artikel/kajian/profil, panduan pemasangan Android/iOS, dan fallback offline. Draf dan halaman redaksi tidak dicache; pekerjaan redaksi tetap memerlukan internet.
 - Backup database/unggahan/kunci, pemulihan, dan promosi image yang sudah diuji.
 
 ## Pengembangan lokal
@@ -50,6 +51,8 @@ php artisan test
 Development lokal memakai SQLite. CI juga menguji PostgreSQL dan image Docker. Tidak diperlukan Node atau build frontend untuk menjalankan situs. Jalankan `php artisan schedule:work` pada terminal terpisah untuk publikasi terjadwal lokal.
 
 ## Pembaruan
+
+Untuk situs yang sudah live dan migrasi semua agen ke OpenAI, ikuti [pembaruan PWA & OpenAI](docs/UPDATE-PWA-OPENAI.md).
 
 ```bash
 # Jalankan dari checkout pengembangan yang sudah di-commit dan bersih.
