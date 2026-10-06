@@ -40,6 +40,13 @@ keluarannya tidak memuat isi file maupun key/token. Rincian ada pada
 [Status dan diagnosis](HERMES.md#status-dan-diagnosis). Jangan setup ulang
 atau mengubah seluruh kepemilikan home hanya berdasarkan pesan error umum.
 
+Jika format sudah lolos tetapi muncul `Konfigurasi media-pm berubah dari
+manifest`, ambil versi terbaru sebelum mengedit profil. Validator kini
+mengenali `_config_version` yang ditambahkan Hermes dan mempertahankannya
+saat migrasi. Perbedaan pengaturan lain tetap ditolak; diagnosis v2 mencetak
+nama field yang berbeda tanpa nilainya. Lihat
+[pemeriksaan konsistensi config](HERMES.md#config-terbaca-tetapi-dianggap-berubah-dari-manifest).
+
 ## 3. Pasang dan periksa development
 
 ```bash

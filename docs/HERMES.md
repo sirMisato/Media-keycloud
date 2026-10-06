@@ -228,6 +228,36 @@ nama field ganda, tag objek, merge key, serta struktur rekursif/terlalu besar;
 pesan error tidak menampilkan cuplikan isi file. Tidak ada perbaikan otomatis
 untuk sintaks rusak atau perubahan pengaturan yang belum dikenali.
 
+### Config terbaca, tetapi dianggap berubah dari manifest
+
+Hermes dapat menambahkan `_config_version` saat migrasi otomatis. Pada
+runtime Hermes yang diuji, migrasi profil PM/Backend menambahkan penanda
+versi ini tanpa mengubah model, tool, atau allowlist. Validator lama
+membandingkan seluruh isi file dan menolak tambahan tersebut.
+
+Versi baru menerima `_config_version` berupa bilangan bulat positif dan
+mempertahankannya ketika `use-codex` atau `repair-gateway` menulis config.
+Pemeriksaan model, endpoint, tool, terminal, dan akses Telegram tetap ketat;
+field tambahan lain tidak otomatis diabaikan. Tidak perlu menghapus penanda
+versi atau mereset file profil. Jalankan sebagai user pemasang, tanpa sudo:
+
+```bash
+cd ~/Media-keycloud &&
+git pull --ff-only origin main &&
+/usr/bin/python3 scripts/hermes-team.py diagnose &&
+/usr/bin/python3 scripts/hermes-team.py use-codex &&
+/usr/bin/python3 scripts/hermes-team.py models &&
+/usr/bin/python3 scripts/hermes-team.py start
+```
+
+`Diagnosis lokal v2` memeriksa semua profil dan, jika masih berbeda,
+menampilkan nama field dari skema installer, misalnya `model.default:
+berbeda` atau `platforms.telegram.extra.allow_from: berbeda`. Nilai field
+tidak dicetak. Field tambahan yang belum dikenal hanya dihitung; nama/nilai
+arbitrer tidak dicetak karena dapat mengandung rahasia. Jika diagnosis
+berhenti, bagikan baris `[GAGAL]` terbaru sebelum mengubah config. Jangan
+menganggap setiap perbedaan sebagai penanda versi otomatis.
+
 ```bash
 cd ~/Media-keycloud
 python3 scripts/hermes-team.py status
@@ -358,6 +388,10 @@ preservasi bot/riwayat/instruksi lokal, dan rotasi key tanpa Gemini.
 Regresi YAML mencakup file hasil penulis konfigurasi Hermes asli, migrasi
 format flow/block, diagnosis tanpa penulisan, serta penolakan konfigurasi
 berubah/rusak dan redaksi rahasia pada pesan parser.
+Tes native juga menjalankan migrasi skema Hermes pada PM/Backend sebelum
+migrasi ke Codex, memeriksa validasi tim, dan memastikan penanda versi
+tidak hilang. Regresi meliputi metadata versi tidak valid serta perubahan
+akses yang tetap ditolak meskipun penanda versi tersedia.
 
 Rujukan primer, diperiksa 26 September 2026:
 

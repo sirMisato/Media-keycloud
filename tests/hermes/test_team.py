@@ -144,6 +144,48 @@ else:
         for path, value in before.items():
             self.assertEqual(path.read_bytes(), value)
 
+    def test_runtime_version_is_accepted_without_modifying_profiles(self):
+        root, unit = self.installed_team()
+        for role in team.ROLES:
+            path = root / "profiles" / ("media-" + role) / "config.yaml"
+            config = team.read_profile_config(path)
+            config["_config_version"] = 46
+            team.write_private(path, yaml.safe_dump(config))
+        before = {p: p.read_bytes() for p in self.base.rglob("*") if p.is_file()}
+        code, output = self.local_diagnosis(unit)
+        self.assertEqual(code, 0, output)
+        for path, value in before.items():
+            self.assertEqual(path.read_bytes(), value)
+
+    def test_invalid_version_metadata_is_rejected_without_echoing_values(self):
+        for value in (None, 0, -1, True, 46.0, "46", {"secret": CREDS["openai"]}):
+            config = {**team.config_for("pm", self.state), "_config_version": value}
+            with self.assertRaisesRegex(team.TeamError, "_config_version harus") as caught:
+                team.check_profile_config("pm", self.state, config)
+            self.assertNotIn(CREDS["openai"], str(caught.exception))
+
+    def test_diagnose_reports_all_profile_differences_without_private_names_or_values(self):
+        root, unit = self.installed_team()
+        for role in ("pm", "backend"):
+            config = team.config_for(role, self.state)
+            config["_config_version"] = 46
+            config["model"]["default"] = CREDS["openai"]
+            config["platforms"]["telegram"]["extra"]["allow_from"] = [CREDS["telegram"]]
+            config[CREDS["gemini"]] = CREDS["openai"]
+            team.write_json(root / "profiles" / ("media-" + role) / "config.yaml", config)
+        before = {p: p.read_bytes() for p in self.base.rglob("*") if p.is_file()}
+        code, output = self.local_diagnosis(unit)
+        self.assertEqual(code, 1)
+        for role in ("pm", "backend"):
+            self.assertIn("Konfigurasi media-" + role, output)
+        self.assertIn("model.default: berbeda", output)
+        self.assertIn("platforms.telegram.extra.allow_from: berbeda", output)
+        self.assertIn("root: 1 field tambahan", output)
+        for value in CREDS.values():
+            self.assertNotIn(value, output)
+        for path, value in before.items():
+            self.assertEqual(path.read_bytes(), value)
+
     def test_profile_reader_rejects_ambiguous_yaml_and_tags_without_leaks(self):
         path = self.base / "media-pm/config.yaml"
         secret = CREDS["openai"]
@@ -167,6 +209,7 @@ else:
         root, unit = self.installed_team()
         path = root / "profiles/media-pm/config.yaml"
         edited = team.config_for("pm", self.state)
+        edited["_config_version"] = 46
         edited["platforms"]["telegram"]["extra"]["dm_policy"] = "open"
         invalid = (yaml.safe_dump(edited), "model: [" + CREDS["telegram"] + "\n")
         with mock.patch.object(team, "unit_path", return_value=unit), \
@@ -309,9 +352,11 @@ else:
         pm_config = root / "profiles/media-pm/config.yaml"
         legacy = json.loads(pm_config.read_text())
         legacy["gateway"].pop("standalone")
+        legacy["_config_version"] = 46
         team.write_private(pm_config, yaml.safe_dump(legacy, default_flow_style=True, width=10000))
         backend_config = root / "profiles/media-backend/config.yaml"
-        team.write_private(backend_config, yaml.safe_dump(team.config_for("backend", self.state)))
+        team.write_private(backend_config, yaml.safe_dump(
+            {**team.config_for("backend", self.state), "_config_version": 46}))
         for role in team.ROLES:
             path = root / "profiles" / ("media-" + role) / "SOUL.md"
             path.write_text(path.read_text() + "\nInstruksi lokal pemilik tetap ada.\n")
@@ -342,6 +387,7 @@ else:
             cfg = json.loads((profile / "config.yaml").read_text())
             self.assertEqual(cfg["model"]["provider"], "openai-api")
             self.assertEqual(cfg["model"]["default"], "gpt-5.3-codex-fixture")
+            self.assertEqual(cfg.get("_config_version"), 46 if role in ("pm", "backend") else None)
             env = team.read_env(profile / ".env")
             self.assertNotIn("GOOGLE_API_KEY", env)
             self.assertEqual(env["OPENAI_API_KEY"], CREDS["openai"])
@@ -465,6 +511,7 @@ else:
         config = root / "profiles/media-pm/config.yaml"
         old_config = json.loads(config.read_text())
         old_config["gateway"].pop("standalone")
+        old_config["_config_version"] = 46
         team.write_json(config, old_config)
         controller = data_dir / "control.py"
         team.write_private(controller, "# previous controller\n")
@@ -490,6 +537,7 @@ else:
             self.assertEqual(control.call_args_list, [mock.call("stop"), mock.call("reset-failed")])
             self.assertEqual(run.call_args.args[0], ["systemctl", "--user", "daemon-reload"])
         self.assertTrue(json.loads(config.read_text())["gateway"]["standalone"])
+        self.assertEqual(json.loads(config.read_text())["_config_version"], 46)
         self.assertEqual(controller.read_bytes(), (REPO / "scripts/hermes-team.py").read_bytes())
         self.assertIn("RestartPreventExitStatus=78\n", unit.read_text())
         for path, value in preserved.items():
@@ -657,6 +705,20 @@ print('NATIVE_YAML_OK')
                     with self.assertRaises(json.JSONDecodeError):
                         json.loads(path.read_text())
                     self.assertEqual(team.read_profile_config(path), team.config_for(role, state))
+                # Reproduce automatic schema migration as Hermes actually performs it.
+                versions = {}
+                migrate_config = ("from hermes_cli.config import migrate_config; "
+                                  "migrate_config(interactive=False, quiet=True); print('NATIVE_SCHEMA_OK')")
+                for role, path in zip(("pm", "backend"), paths):
+                    result = team.run([os.environ["MEDIA_HERMES_PYTHON"], "-c", migrate_config],
+                                      env=team.isolated_env(path.parent), cwd=state["workspace"], timeout=120)
+                    self.assertIn("NATIVE_SCHEMA_OK", result)
+                    config = team.read_profile_config(path)
+                    versions[role] = config["_config_version"]
+                    self.assertGreater(versions[role], 0)
+                    team.check_profile_config(role, state, config)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    team.check_team(state, live=False)
                 team.write_json(base / "team.json", state)
                 team.write_private(base / "control.py", "# old controller\n")
                 unit = base / "units/media-hermes.service"
@@ -672,6 +734,8 @@ print('NATIVE_YAML_OK')
                     team.use_codex(state)
                 state = team.read_state(base)
                 self.assertEqual(state["model_mode"], "codex")
+                for role, path in zip(("pm", "backend"), paths):
+                    self.assertEqual(team.read_profile_config(path)["_config_version"], versions[role])
             probe = REPO / "tests/hermes/native_probe.py"
             for role in team.ROLES:
                 env["HERMES_HOME"] = str(root / "profiles" / ("media-" + role))

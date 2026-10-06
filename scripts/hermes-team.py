@@ -411,9 +411,60 @@ def profile_env(role, root, credentials, owner, *, mode="mixed"):
     return "".join(f"{key}={json.dumps(value)}\n" for key, value in values.items())
 
 
-def config_for(role, state):
-    return profile_config(role, state["codex_model"], state.get("gemini_model", ""),
-                          state["owner"], mode=model_mode(state))
+def schema_version(config, role):
+    """Hermes owns this migration stamp; it is not a model/tool/access setting."""
+    if "_config_version" not in config:
+        return None
+    version = config["_config_version"]
+    if type(version) is not int or version < 1:
+        raise TeamError(f"media-{role}/config.yaml: _config_version harus bilangan bulat positif.")
+    return version
+
+
+def config_for(role, state, *, current=None):
+    config = profile_config(role, state["codex_model"], state.get("gemini_model", ""),
+                            state["owner"], mode=model_mode(state))
+    if current is not None:
+        version = schema_version(current, role)
+        if version is not None:
+            config["_config_version"] = version
+    return config
+
+
+def config_differences(actual, expected, path="root"):
+    """Only names from the generated schema are printable, never arbitrary keys or values."""
+    if isinstance(actual, dict) and isinstance(expected, dict):
+        differences = []
+        for key, value in expected.items():
+            child = key if path == "root" else path + "." + key
+            if key not in actual:
+                differences.append(child + ": hilang")
+            else:
+                differences.extend(config_differences(actual[key], value, child))
+        extra = len(actual.keys() - expected.keys())
+        if extra:
+            differences.append(f"{path}: {extra} field tambahan (nama/nilai tidak ditampilkan)")
+        return differences
+    if actual != expected or type(actual) is not type(expected):
+        return [path + ": berbeda"]
+    return []
+
+
+def check_profile_config(role, state, config, *, allow_legacy_gateway=False):
+    schema_version(config, role)
+    # Accept only this known runtime metadata. Every behavioral field still matches exactly.
+    actual = {key: value for key, value in config.items() if key != "_config_version"}
+    expected = config_for(role, state)
+    if (allow_legacy_gateway and role == "pm" and isinstance(actual.get("gateway"), dict)
+            and "standalone" not in actual["gateway"]):
+        expected["gateway"].pop("standalone")
+    differences = config_differences(actual, expected)
+    if differences:
+        detail = "; ".join(differences[:8])
+        if len(differences) > 8:
+            detail += f"; dan {len(differences) - 8} perbedaan lain"
+        raise TeamError(f"Konfigurasi media-{role} berubah dari manifest. {detail}. "
+                        "Tinjau di VPS sebelum mulai.")
 
 
 def model_note(role, state):
@@ -545,13 +596,7 @@ def check_team(state, *, live=True, allow_legacy_gateway=False):
                 raise TeamError(f"File profil media-{role}/{filename} hilang atau izin bukan privat.")
         cfg = read_profile_config(profile / "config.yaml")
         env = read_env(profile / ".env")
-        expected = config_for(role, state)
-        if (allow_legacy_gateway and role == "pm" and isinstance(cfg.get("gateway"), dict)
-                and "standalone" not in cfg["gateway"]):
-            # Repair accepts exactly the old generated config, never arbitrary edits.
-            expected["gateway"].pop("standalone")
-        if cfg != expected:
-            raise TeamError(f"Konfigurasi media-{role} berubah dari manifest. Tinjau di VPS sebelum mulai.")
+        check_profile_config(role, state, cfg, allow_legacy_gateway=allow_legacy_gateway)
         expected_env = dict(line.split("=", 1) for line in profile_env(
             role, root, credentials, state["owner"], mode=model_mode(state)).splitlines())
         if env != {key: json.loads(value) for key, value in expected_env.items()}:
@@ -627,7 +672,7 @@ def diagnose(data_dir):
             fail(label, safe_error(error))
         return None
 
-    print(f"Diagnosis lokal v1 | uid={os.geteuid()} | tanpa sudo")
+    print(f"Diagnosis lokal v2 | uid={os.geteuid()} | tanpa sudo")
     print("Tidak mencetak isi file, path dari manifest, API key, atau token.")
     home = Path.home()
     inspect(home, "home user", directory=True)
@@ -665,7 +710,10 @@ def diagnose(data_dir):
             label = file_label(path)
             if inspect(path, label, private=True):
                 reader = read_env if filename == ".env" else read_profile_config if filename == "config.yaml" else read_text
-                probe(label, lambda p=path, read=reader: read(p))
+                value = probe(label, lambda p=path, read=reader: read(p))
+                if filename == "config.yaml" and isinstance(value, dict) and state is not None:
+                    probe("konsistensi media-" + role, lambda r=role, cfg=value: check_profile_config(
+                        r, state, cfg, allow_legacy_gateway=True))
     inspect(data_dir / "workspace", "workspace tim", directory=True)
     if state is not None:
         if not os.access(state["hermes"], os.X_OK) or not Path(state["hermes"]).is_file():
@@ -691,7 +739,8 @@ def repair_gateway(state):
     # Stop only this team's supervisor before updating its runtime copy and config.
     # Do not restart automatically: start will check provider/bot credentials first.
     control("stop")
-    write_json(Path(state["root"]) / "profiles/media-pm/config.yaml", config_for("pm", state))
+    config_path = Path(state["root"]) / "profiles/media-pm/config.yaml"
+    write_json(config_path, config_for("pm", state, current=read_profile_config(config_path)))
     write_private(data_dir / "control.py", Path(__file__).read_text())
     write_private(unit, unit_text(data_dir))
     run(["systemctl", "--user", "daemon-reload"], env=user_bus_env())
@@ -742,7 +791,8 @@ def use_codex(state):
     changes = {}
     for role in ROLES:
         profile = root / "profiles" / ("media-" + role)
-        changes[profile / "config.yaml"] = json.dumps(config_for(role, updated), indent=2) + "\n"
+        config = config_for(role, updated, current=read_profile_config(profile / "config.yaml"))
+        changes[profile / "config.yaml"] = json.dumps(config, indent=2) + "\n"
         changes[profile / ".env"] = profile_env(role, root, credentials, state["owner"], mode="codex")
         # Preserve local role edits; replace only the installer's model note.
         soul = (profile / "SOUL.md").read_text()
