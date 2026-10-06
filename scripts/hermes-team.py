@@ -421,13 +421,42 @@ def schema_version(config, role):
     return version
 
 
+def runtime_metadata(config, role):
+    """Validate and copy Hermes' schema stamp and first-touch hint state only."""
+    metadata = {}
+    version = schema_version(config, role)
+    if version is not None:
+        metadata["_config_version"] = version
+    if "onboarding" not in config:
+        return metadata
+    onboarding = config["onboarding"]
+    if not isinstance(onboarding, dict) or onboarding.keys() - {"seen", "profile_build"}:
+        raise TeamError(f"media-{role}/config.yaml: onboarding harus mapping dengan field yang didukung.")
+    preserved = {}
+    if "seen" in onboarding:
+        seen = onboarding["seen"]
+        # Stable flags from Hermes agent/onboarding.py, not arbitrary runtime settings.
+        flags = {"busy_input_prompt", "tool_progress_prompt", "openclaw_residue_cleanup",
+                 "profile_build_offered"}
+        if (not isinstance(seen, dict) or seen.keys() - flags
+                or any(type(value) is not bool for value in seen.values())):
+            raise TeamError(f"media-{role}/config.yaml: onboarding.seen harus mapping "
+                            "penanda yang didukung dengan nilai boolean.")
+        preserved["seen"] = dict(seen)
+    if "profile_build" in onboarding:
+        mode = onboarding["profile_build"]
+        if not isinstance(mode, str) or mode not in ("ask", "off"):
+            raise TeamError(f"media-{role}/config.yaml: onboarding.profile_build harus ask atau off.")
+        preserved["profile_build"] = mode
+    metadata["onboarding"] = preserved
+    return metadata
+
+
 def config_for(role, state, *, current=None):
     config = profile_config(role, state["codex_model"], state.get("gemini_model", ""),
                             state["owner"], mode=model_mode(state))
     if current is not None:
-        version = schema_version(current, role)
-        if version is not None:
-            config["_config_version"] = version
+        config.update(runtime_metadata(current, role))
     return config
 
 
@@ -451,9 +480,9 @@ def config_differences(actual, expected, path="root"):
 
 
 def check_profile_config(role, state, config, *, allow_legacy_gateway=False):
-    schema_version(config, role)
-    # Accept only this known runtime metadata. Every behavioral field still matches exactly.
-    actual = {key: value for key, value in config.items() if key != "_config_version"}
+    metadata = runtime_metadata(config, role)
+    # Known hint state can change during normal use; model/tool/access fields must match.
+    actual = {key: value for key, value in config.items() if key not in metadata}
     expected = config_for(role, state)
     if (allow_legacy_gateway and role == "pm" and isinstance(actual.get("gateway"), dict)
             and "standalone" not in actual["gateway"]):

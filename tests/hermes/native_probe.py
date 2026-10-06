@@ -45,6 +45,8 @@ def verify():
     if role == "pm":
         gateway_startup()
         kanban(workspace, cfg)
+    from agent.onboarding import TOOL_PROGRESS_FLAG, mark_seen
+    assert mark_seen(Path(os.environ["HERMES_HOME"]) / "config.yaml", TOOL_PROGRESS_FLAG)
     print("NATIVE_OK", role)
 
 

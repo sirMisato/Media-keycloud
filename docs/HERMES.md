@@ -232,14 +232,24 @@ untuk sintaks rusak atau perubahan pengaturan yang belum dikenali.
 
 Hermes dapat menambahkan `_config_version` saat migrasi otomatis. Pada
 runtime Hermes yang diuji, migrasi profil PM/Backend menambahkan penanda
-versi ini tanpa mengubah model, tool, atau allowlist. Validator lama
-membandingkan seluruh isi file dan menolak tambahan tersebut.
+versi ini tanpa mengubah model, tool, atau allowlist. Hermes juga menyimpan
+penanda petunjuk awal pada `onboarding.seen`, misalnya setelah kontak pertama
+atau petunjuk progres tool. Validator lama membandingkan seluruh isi file
+dan menolak metadata yang belum dikenali sebagai field tambahan.
 
-Versi baru menerima `_config_version` berupa bilangan bulat positif dan
-mempertahankannya ketika `use-codex` atau `repair-gateway` menulis config.
+Versi baru menerima `_config_version` berupa bilangan bulat positif serta
+bagian `onboarding` dengan format yang dikenali dari Hermes:
+
+- `seen` berupa mapping dengan nilai boolean untuk `busy_input_prompt`,
+  `tool_progress_prompt`, `openclaw_residue_cleanup`, dan `profile_build_offered`.
+- `profile_build` opsional bernilai `ask` atau `off` untuk preferensi tawaran
+  pengenalan pengguna. Bagian/penanda yang belum tersimpan tidak ditambahkan.
+
+Keduanya dipertahankan ketika `use-codex` atau `repair-gateway` menulis config.
 Pemeriksaan model, endpoint, tool, terminal, dan akses Telegram tetap ketat;
-field tambahan lain tidak otomatis diabaikan. Tidak perlu menghapus penanda
-versi atau mereset file profil. Jalankan sebagai user pemasang, tanpa sudo:
+field tambahan lain, penanda yang belum dikenal, dan nilai metadata yang
+tidak valid tetap ditolak. Tidak perlu menghapus `onboarding`, penanda versi,
+atau mereset file profil. Jalankan sebagai user pemasang, tanpa sudo:
 
 ```bash
 cd ~/Media-keycloud &&
@@ -389,9 +399,14 @@ Regresi YAML mencakup file hasil penulis konfigurasi Hermes asli, migrasi
 format flow/block, diagnosis tanpa penulisan, serta penolakan konfigurasi
 berubah/rusak dan redaksi rahasia pada pesan parser.
 Tes native juga menjalankan migrasi skema Hermes pada PM/Backend sebelum
-migrasi ke Codex, memeriksa validasi tim, dan memastikan penanda versi
-tidak hilang. Regresi meliputi metadata versi tidak valid serta perubahan
-akses yang tetap ditolak meskipun penanda versi tersedia.
+migrasi ke Codex, memanggil helper kontak pertama dan petunjuk onboarding
+asli, lalu memastikan penanda versi/petunjuk tetap tersimpan. Penulisan
+petunjuk setelah migrasi juga harus lolos pemeriksaan keenam profil.
+Regresi meliputi metadata versi/onboarding tidak valid serta perubahan
+akses yang tetap ditolak meskipun metadata tersedia.
+
+Rujukan kompatibilitas onboarding, diperiksa 6 Oktober 2026:
+[helper onboarding Hermes pada versi yang dipakai CI](https://github.com/NousResearch/hermes-agent/blob/11c50f05d070b2158afdca73f077d2501ecd77fc/agent/onboarding.py).
 
 Rujukan primer, diperiksa 26 September 2026:
 

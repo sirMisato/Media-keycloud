@@ -164,6 +164,52 @@ else:
                 team.check_profile_config("pm", self.state, config)
             self.assertNotIn(CREDS["openai"], str(caught.exception))
 
+    def test_runtime_onboarding_is_accepted_without_rewriting_profiles(self):
+        root, unit = self.installed_team()
+        variants = ({}, {"seen": {}}, {"seen": {"profile_build_offered": True}},
+                    {"seen": {"busy_input_prompt": False, "tool_progress_prompt": True}},
+                    {"profile_build": "off", "seen": {"openclaw_residue_cleanup": True}},
+                    {"profile_build": "ask"})
+        for role, onboarding in zip(team.ROLES, variants):
+            path = root / "profiles" / ("media-" + role) / "config.yaml"
+            config = {**team.config_for(role, self.state), "_config_version": 46,
+                      "onboarding": onboarding}
+            team.write_private(path, yaml.safe_dump(config))
+        def snapshot():
+            return {p: (p.read_bytes(), p.stat().st_mode, p.stat().st_mtime_ns)
+                    for p in self.base.rglob("*") if p.is_file()}
+        before = snapshot()
+        code, output = self.local_diagnosis(unit)
+        self.assertEqual(code, 0, output)
+        with contextlib.redirect_stdout(io.StringIO()) as models:
+            team.show_models(self.state)
+        for role in team.ROLES:
+            self.assertIn("media-" + role + ": provider=", models.getvalue())
+        self.assertEqual(snapshot(), before)
+
+    def test_invalid_onboarding_blocks_migration_without_leaks_or_changes(self):
+        root, unit = self.installed_team()
+        path = root / "profiles/media-pm/config.yaml"
+        invalid = (None, [], CREDS["openai"], {CREDS["openai"]: True},
+                   {"seen": None}, {"seen": []}, {"seen": {CREDS["telegram"]: True}},
+                   *({"seen": {"profile_build_offered": value}}
+                     for value in (1, "true", CREDS["gemini"], {"model": CREDS["openai"]})),
+                   *({"profile_build": value} for value in (False, [], CREDS["openai"])))
+        with mock.patch.object(team, "unit_path", return_value=unit), \
+             mock.patch.object(team, "control") as control, \
+             mock.patch.object(team, "check_models") as models:
+            for onboarding in invalid:
+                team.write_json(path, {**team.config_for("pm", self.state), "onboarding": onboarding})
+                before = {p: p.read_bytes() for p in self.base.rglob("*") if p.is_file()}
+                with self.assertRaisesRegex(team.TeamError, "onboarding") as caught:
+                    team.use_codex(self.state)
+                for value in CREDS.values():
+                    self.assertNotIn(value, str(caught.exception))
+                control.assert_not_called()
+                models.assert_not_called()
+                for file, content in before.items():
+                    self.assertEqual(file.read_bytes(), content)
+
     def test_diagnose_reports_all_profile_differences_without_private_names_or_values(self):
         root, unit = self.installed_team()
         for role in ("pm", "backend"):
@@ -210,6 +256,7 @@ else:
         path = root / "profiles/media-pm/config.yaml"
         edited = team.config_for("pm", self.state)
         edited["_config_version"] = 46
+        edited["onboarding"] = {"seen": {"profile_build_offered": True}}
         edited["platforms"]["telegram"]["extra"]["dm_policy"] = "open"
         invalid = (yaml.safe_dump(edited), "model: [" + CREDS["telegram"] + "\n")
         with mock.patch.object(team, "unit_path", return_value=unit), \
@@ -353,10 +400,14 @@ else:
         legacy = json.loads(pm_config.read_text())
         legacy["gateway"].pop("standalone")
         legacy["_config_version"] = 46
+        onboarding = {"pm": {"seen": {"profile_build_offered": True, "tool_progress_prompt": True}},
+                      "backend": {"profile_build": "off", "seen": {"busy_input_prompt": False}}}
+        legacy["onboarding"] = onboarding["pm"]
         team.write_private(pm_config, yaml.safe_dump(legacy, default_flow_style=True, width=10000))
         backend_config = root / "profiles/media-backend/config.yaml"
         team.write_private(backend_config, yaml.safe_dump(
-            {**team.config_for("backend", self.state), "_config_version": 46}))
+            {**team.config_for("backend", self.state), "_config_version": 46,
+             "onboarding": onboarding["backend"]}))
         for role in team.ROLES:
             path = root / "profiles" / ("media-" + role) / "SOUL.md"
             path.write_text(path.read_text() + "\nInstruksi lokal pemilik tetap ada.\n")
@@ -388,6 +439,7 @@ else:
             self.assertEqual(cfg["model"]["provider"], "openai-api")
             self.assertEqual(cfg["model"]["default"], "gpt-5.3-codex-fixture")
             self.assertEqual(cfg.get("_config_version"), 46 if role in ("pm", "backend") else None)
+            self.assertEqual(cfg.get("onboarding"), onboarding.get(role))
             env = team.read_env(profile / ".env")
             self.assertNotIn("GOOGLE_API_KEY", env)
             self.assertEqual(env["OPENAI_API_KEY"], CREDS["openai"])
@@ -512,6 +564,7 @@ else:
         old_config = json.loads(config.read_text())
         old_config["gateway"].pop("standalone")
         old_config["_config_version"] = 46
+        old_config["onboarding"] = {"profile_build": "off", "seen": {"tool_progress_prompt": True}}
         team.write_json(config, old_config)
         controller = data_dir / "control.py"
         team.write_private(controller, "# previous controller\n")
@@ -538,6 +591,7 @@ else:
             self.assertEqual(run.call_args.args[0], ["systemctl", "--user", "daemon-reload"])
         self.assertTrue(json.loads(config.read_text())["gateway"]["standalone"])
         self.assertEqual(json.loads(config.read_text())["_config_version"], 46)
+        self.assertEqual(json.loads(config.read_text())["onboarding"], old_config["onboarding"])
         self.assertEqual(controller.read_bytes(), (REPO / "scripts/hermes-team.py").read_bytes())
         self.assertIn("RestartPreventExitStatus=78\n", unit.read_text())
         for path, value in preserved.items():
@@ -717,6 +771,29 @@ print('NATIVE_YAML_OK')
                     versions[role] = config["_config_version"]
                     self.assertGreater(versions[role], 0)
                     team.check_profile_config(role, state, config)
+                # Actual first contact and one-shot hints add onboarding to native YAML.
+                onboarding = {}
+                mark_hints = """import sys
+from pathlib import Path
+from agent.onboarding import (BUSY_INPUT_FLAG, TOOL_PROGRESS_FLAG, OPENCLAW_RESIDUE_FLAG,
+                              PROFILE_BUILD_FLAG, first_contact_turn_note, mark_seen, is_seen)
+from hermes_cli.config import read_user_config_raw
+path = Path(sys.argv[1])
+note = first_contact_turn_note(read_user_config_raw(path), path,
+                              session_history_empty=True, install_has_prior_sessions=False)
+assert note and is_seen(read_user_config_raw(path), PROFILE_BUILD_FLAG)
+for flag in (BUSY_INPUT_FLAG, TOOL_PROGRESS_FLAG, OPENCLAW_RESIDUE_FLAG):
+    assert mark_seen(path, flag)
+print('NATIVE_ONBOARDING_OK')
+"""
+                for role, path in zip(("pm", "backend"), paths):
+                    result = team.run([os.environ["MEDIA_HERMES_PYTHON"], "-c", mark_hints, path],
+                                      env=team.isolated_env(path.parent), cwd=state["workspace"], timeout=120)
+                    self.assertIn("NATIVE_ONBOARDING_OK", result)
+                    config = team.read_profile_config(path)
+                    onboarding[role] = config["onboarding"]
+                    self.assertEqual(len(onboarding[role]["seen"]), 4)
+                    team.check_profile_config(role, state, config)
                 with contextlib.redirect_stdout(io.StringIO()):
                     team.check_team(state, live=False)
                 team.write_json(base / "team.json", state)
@@ -736,12 +813,16 @@ print('NATIVE_YAML_OK')
                 self.assertEqual(state["model_mode"], "codex")
                 for role, path in zip(("pm", "backend"), paths):
                     self.assertEqual(team.read_profile_config(path)["_config_version"], versions[role])
+                    self.assertEqual(team.read_profile_config(path)["onboarding"], onboarding[role])
             probe = REPO / "tests/hermes/native_probe.py"
             for role in team.ROLES:
                 env["HERMES_HOME"] = str(root / "profiles" / ("media-" + role))
                 result = team.run([os.environ["MEDIA_HERMES_PYTHON"], probe, role, state["workspace"], team.model_mode(state)],
                                   env=env, cwd=state["workspace"], timeout=120)
                 self.assertIn("NATIVE_OK", result)
+            # Ordinary hint writes after startup must not break the next preflight.
+            with contextlib.redirect_stdout(io.StringIO()):
+                team.check_team(state, live=False)
 
 
 if __name__ == "__main__":
