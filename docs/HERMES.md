@@ -164,6 +164,36 @@ Tes yang terhalang akses/dependensi harus dilaporkan, bukan dianggap PASS.
 
 ## Status dan diagnosis
 
+Jika `use-codex` berhenti dengan pesan lama `Operasi lokal gagal`, ambil
+skrip terbaru dan jalankan diagnosis **sebagai user pemasang Hermes, tanpa sudo**:
+
+```bash
+cd ~/Media-keycloud &&
+git pull --ff-only origin main &&
+python3 scripts/hermes-team.py diagnose
+```
+
+`diagnose` hanya membaca kondisi lokal: UID/izin file, akses direktori,
+lock pemasangan, format `team.json`, konfigurasi/env enam profil, serta
+kecocokan unit/controller. Tidak mencetak isi file, nilai konfigurasi,
+key/token, atau path dari manifest. Tidak memanggil Hermes/API/Telegram,
+mengubah file/izin, atau menghentikan service. Exit code `1` berarti ada
+masalah pada laporan; `0` hanya berarti pemeriksaan lokal lolos.
+Bagikan keluarannya untuk menentukan langkah berikutnya. Tidak perlu
+membagikan `.env`, `config.yaml`, atau output traceback.
+
+Label `direktori data tim` merujuk `~/.local/share/media-keycloud`, profil
+berada di `hermes/profiles` di dalamnya, dan lock di
+`~/.cache/media-keycloud/setup.lock`. Jika instalasi menggunakan lokasi
+khusus, tambahkan `--data-dir /lokasi/tim` pada perintah.
+Laporan `EACCES` menunjukkan masalah akses, bukan alasan menjalankan
+installer dengan sudo atau mengubah seluruh home memakai `chown -R`.
+`JSON tidak valid` juga dapat berarti `config.yaml` telah ditulis ulang
+sebagai YAML biasa; installer mengharapkan format JSON yang dibuatnya.
+Tinjau konfigurasi lokal sebelum memperbaiki format; jangan mereset profil.
+Lock yang sibuk harus ditunggu, bukan dihapus. Manifest yang hilang atau
+rusak perlu ditinjau bersama file tim yang masih ada sebelum setup ulang.
+
 ```bash
 cd ~/Media-keycloud
 python3 scripts/hermes-team.py status

@@ -26,6 +26,13 @@ PM, UI/UX, Backend, QA/QC, Security, dan DevOps harus menunjukkan `provider=open
 
 Migrasi berhenti bila masih ada worker dengan task `running`. Tunggu task selesai, lalu ulangi `use-codex`; jangan membunuh pekerjaan yang masih berlangsung. Bila setup tim belum pernah dilakukan, ikuti [HERMES.md](HERMES.md). API key yang pernah dibagikan di chat harus diganti melalui `rotate-keys`; jangan menuliskan key di Git atau tangkapan layar.
 
+Jika migrasi gagal dengan pesan lokal/izin/format konfigurasi, jalankan
+`python3 scripts/hermes-team.py diagnose` **tanpa sudo** dan tinjau laporan
+sebelum meneruskan. Perintah ini tidak mengubah file, service, atau bot;
+keluarannya tidak memuat isi file maupun key/token. Rincian ada pada
+[Status dan diagnosis](HERMES.md#status-dan-diagnosis). Jangan setup ulang
+atau mengubah seluruh kepemilikan home hanya berdasarkan pesan error umum.
+
 ## 3. Pasang dan periksa development
 
 ```bash

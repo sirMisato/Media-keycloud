@@ -1,5 +1,6 @@
 """Offline regressions for real installer behavior; all credentials are fixtures."""
 import contextlib
+import errno
 import importlib.util
 import io
 import json
@@ -75,6 +76,157 @@ else:
         unit = self.base / "units/media-hermes.service"
         team.write_private(unit, team.unit_text(data_dir))
         return root, unit
+
+    def local_diagnosis(self, unit):
+        with mock.patch.object(team.Path, "home", return_value=self.base), \
+             mock.patch.object(team, "unit_path", return_value=unit), \
+             mock.patch.object(team, "run", side_effect=AssertionError("No subprocess")), \
+             mock.patch.object(team, "control", side_effect=AssertionError("No service changes")), \
+             mock.patch.object(team, "api_json", side_effect=AssertionError("No network")), \
+             mock.patch.object(team, "write_private", side_effect=AssertionError("No writes")), \
+             contextlib.redirect_stdout(io.StringIO()) as output:
+            code = team.diagnose(Path(self.state["data_dir"]))
+        return code, output.getvalue()
+
+    def test_diagnose_preserves_files_and_does_not_create_missing_lock(self):
+        _root, unit = self.installed_team()
+        def snapshot():
+            return {str(p): (p.read_bytes() if p.is_file() else None,
+                             p.stat().st_mode, p.stat().st_mtime_ns) for p in self.base.rglob("*")}
+        before = snapshot()
+        code, output = self.local_diagnosis(unit)
+        self.assertEqual(code, 0, output)
+        self.assertEqual(before, snapshot())
+        self.assertIn("pemeriksaan lokal lolos", output)
+        self.assertFalse((self.base / ".cache").exists())
+        for secret in CREDS.values():
+            self.assertNotIn(secret, output)
+        self.assertNotIn(str(self.base), output)
+
+    def test_diagnose_identifies_json_and_env_lines_without_leaking_values(self):
+        root, unit = self.installed_team()
+        (root / "profiles/media-uiux/config.yaml").write_text("model: " + CREDS["gemini"] + "\n")
+        (root / "profiles/media-qa/.env").write_text("# fixture\nGOOGLE_API_KEY=" + CREDS["gemini"] + "\n")
+        code, output = self.local_diagnosis(unit)
+        self.assertEqual(code, 1)
+        self.assertIn("media-uiux/config.yaml: JSON tidak valid pada baris 1", output)
+        self.assertIn("media-qa/.env: format env tidak valid pada baris 2", output)
+        for secret in CREDS.values():
+            self.assertNotIn(secret, output)
+
+    def test_diagnose_reports_access_and_private_mode_failures(self):
+        root, unit = self.installed_team()
+        protected = root / "profiles/media-pm/.env"
+        shared = root / "profiles/media-security/.env"
+        shared.chmod(0o644)
+        access = team.os.access
+        with mock.patch.object(team.os, "access", side_effect=lambda p, mode: False if p == protected else access(p, mode)):
+            code, output = self.local_diagnosis(unit)
+        self.assertEqual(code, 1)
+        self.assertRegex(output, r"\[GAGAL\] media-pm/\.env: .*baca=tidak")
+        self.assertRegex(output, r"\[GAGAL\] media-security/\.env: .*mode=0644")
+        self.assertEqual(shared.stat().st_mode & 0o777, 0o644)
+
+    def test_diagnose_handles_missing_or_invalid_manifest_without_setup_advice(self):
+        _root, unit = self.installed_team()
+        manifest = Path(self.state["data_dir"]) / "team.json"
+        cases = (None, "[]", '{"broken": ' + CREDS["openai"], json.dumps({**self.state, "owner": None}))
+        for content in cases:
+            with self.subTest(content=type(content).__name__):
+                if content is None:
+                    manifest.unlink()
+                else:
+                    team.write_private(manifest, content)
+                code, output = self.local_diagnosis(unit)
+                self.assertEqual(code, 1)
+                self.assertIn("team.json", output)
+                self.assertNotIn("Jalankan setup", output)
+                self.assertNotIn(CREDS["openai"], output)
+
+    def test_lock_diagnosis_and_migration_refuse_busy_lock_without_truncating(self):
+        _root, unit = self.installed_team()
+        lock = self.base / ".cache/media-keycloud/setup.lock"
+        team.write_private(lock, "existing lock contents\n")
+        with lock.open("r") as held:
+            team.fcntl.flock(held, team.fcntl.LOCK_EX | team.fcntl.LOCK_NB)
+            code, output = self.local_diagnosis(unit)
+            self.assertEqual(code, 1)
+            self.assertIn("lock pemasangan: sedang dipakai proses lain", output)
+            with mock.patch.object(team.Path, "home", return_value=self.base):
+                with self.assertRaisesRegex(team.TeamError, "Lock pemasangan sedang dipakai"):
+                    with team.setup_lock():
+                        self.fail("Lock must not be acquired")
+        with mock.patch.object(team.Path, "home", return_value=self.base):
+            with team.setup_lock():
+                pass
+        self.assertEqual(lock.read_text(), "existing lock contents\n")
+
+    def test_error_details_do_not_include_exception_values_or_paths(self):
+        secret = CREDS["telegram"]
+        errors = (PermissionError(errno.EACCES, secret, "/secret/" + secret),
+                  KeyError(secret), TypeError(secret),
+                  json.JSONDecodeError(secret, secret, 0))
+        for error in errors:
+            self.assertNotIn(secret, team.safe_error(error))
+        self.assertIn("EACCES", team.safe_error(errors[0]))
+        with mock.patch.object(team.Path, "read_text", side_effect=errors[0]):
+            with self.assertRaisesRegex(team.TeamError, "media-pm/.env: EACCES") as caught:
+                team.read_env(Path("/secret/media-pm/.env"))
+        self.assertNotIn(secret, str(caught.exception))
+
+    def test_lock_access_error_is_labeled_and_symlink_is_not_followed(self):
+        lock = self.base / ".cache/media-keycloud/setup.lock"
+        team.write_private(lock.parent / "target", "preserve this\n")
+        lock.symlink_to(lock.parent / "target")
+        with mock.patch.object(team.Path, "home", return_value=self.base):
+            with self.assertRaisesRegex(team.TeamError, "Lock pemasangan.*ELOOP"):
+                with team.setup_lock():
+                    self.fail("Must refuse symlink")
+            with mock.patch.object(team.os, "open", side_effect=PermissionError(
+                    errno.EACCES, CREDS["openai"], CREDS["telegram"])):
+                with self.assertRaisesRegex(team.TeamError, "Lock pemasangan.*EACCES") as caught:
+                    with team.setup_lock():
+                        self.fail("Must refuse inaccessible lock")
+        self.assertEqual((lock.parent / "target").read_text(), "preserve this\n")
+        for secret in CREDS.values():
+            self.assertNotIn(secret, str(caught.exception))
+
+    def test_env_rejects_duplicate_or_non_string_secrets_without_echoing(self):
+        path = self.base / "media-pm/.env"
+        for value in ('OPENAI_API_KEY="one"\nOPENAI_API_KEY="two"\n',
+                      'OPENAI_API_KEY=null\n', 'OPENAI_API_KEY=["private"]\n',
+                      CREDS["openai"] + "\n"):
+            team.write_private(path, value)
+            with self.assertRaisesRegex(team.TeamError, "media-pm/.env: format env") as caught:
+                team.read_env(path)
+            self.assertNotIn(CREDS["openai"], str(caught.exception))
+
+    def test_diagnose_cli_works_before_manifest_and_root_stays_blocked(self):
+        argv = ["hermes-team.py", "--data-dir", self.state["data_dir"], "diagnose"]
+        with mock.patch.object(team.sys, "argv", argv), \
+             mock.patch.object(team.os, "geteuid", return_value=1000), \
+             mock.patch.object(team, "diagnose", return_value=1) as diagnose, \
+             mock.patch.object(team, "read_state", side_effect=AssertionError("diagnose inspects manifest itself")):
+            self.assertEqual(team.main(), 1)
+            diagnose.assert_called_once_with(Path(self.state["data_dir"]))
+        with mock.patch.object(team.sys, "argv", argv), mock.patch.object(team.os, "geteuid", return_value=0):
+            with self.assertRaisesRegex(team.TeamError, "tanpa sudo"):
+                team.main()
+
+    def test_use_codex_reports_non_json_kanban_without_leaking_or_changing_files(self):
+        _root, unit = self.installed_team()
+        before = {p: p.read_bytes() for p in self.base.rglob("*") if p.is_file()}
+        with mock.patch.object(team, "unit_path", return_value=unit), \
+             mock.patch.object(team, "control") as control, \
+             mock.patch.object(team, "check_models"), \
+             mock.patch.object(team, "run", return_value=CREDS["openai"]), \
+             contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(team.TeamError, "Respons status worker bukan JSON") as caught:
+                team.use_codex(self.state)
+        control.assert_called_once_with("stop")
+        self.assertNotIn(CREDS["openai"], str(caught.exception))
+        for path, value in before.items():
+            self.assertEqual(path.read_bytes(), value)
 
     def test_codex_metadata_check_never_contacts_gemini(self):
         with mock.patch.object(team, "api_json", return_value={"id": team.DEFAULT_CODEX}) as api, \

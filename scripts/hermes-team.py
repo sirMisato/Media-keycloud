@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+import errno
 import fcntl
 import getpass
 import json
@@ -11,6 +13,7 @@ from pathlib import Path
 import re
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -39,6 +42,82 @@ ROLES = {
 
 class TeamError(Exception):
     pass
+
+
+def safe_error(error):
+    """Never stringify OS/parse errors: their message or filename can contain secrets."""
+    if isinstance(error, TeamError):
+        return str(error)
+    if isinstance(error, json.JSONDecodeError):
+        return f"JSON tidak valid pada baris {error.lineno}, kolom {error.colno}."
+    if isinstance(error, UnicodeError):
+        return "Teks bukan UTF-8 yang valid."
+    if isinstance(error, OSError):
+        code = errno.errorcode.get(error.errno, "OS_ERROR")
+        hint = {"EACCES": "akses ditolak", "EPERM": "izin tidak cukup",
+                "ENOENT": "file/direktori tidak ditemukan", "ENOTDIR": "komponen path bukan direktori",
+                "ENOSPC": "ruang disk habis", "EROFS": "filesystem hanya baca",
+                "ELOOP": "symlink tidak dapat digunakan"}.get(code, "operasi filesystem gagal")
+        return f"{code}: {hint}."
+    return "Struktur data tidak valid (" + type(error).__name__ + ")."
+
+
+def file_label(path):
+    """Only emit installer-owned names, never a caller's arbitrary path."""
+    path = Path(path)
+    if path.name in (".env", "config.yaml", "SOUL.md"):
+        for role in ROLES:
+            if path.parent.name == "media-" + role:
+                return "media-" + role + "/" + path.name
+    if path.name in ("team.json", "control.py", SERVICE, "setup.lock"):
+        return path.name
+    return "file tim"
+
+
+def read_text(path):
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise TeamError(file_label(path) + ": " + safe_error(error)) from None
+
+
+def read_json(path):
+    try:
+        result = json.loads(read_text(path))
+    except json.JSONDecodeError as error:
+        raise TeamError(file_label(path) + ": " + safe_error(error) +
+                        " Installer mengharapkan objek JSON (juga valid sebagai YAML).") from None
+    if not isinstance(result, dict):
+        raise TeamError(file_label(path) + ": struktur harus berupa objek JSON.")
+    return result
+
+
+@contextmanager
+def setup_lock():
+    lock_dir = Path.home() / ".cache/media-keycloud"
+    fd = None
+    try:
+        lock_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(lock_dir / "setup.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise TeamError("Lock pemasangan: setup.lock bukan file biasa.")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise TeamError("Lock pemasangan sedang dipakai proses lain. Tunggu proses itu selesai; "
+                            "jangan hapus setup.lock.") from None
+    except OSError as error:
+        if fd is not None:
+            os.close(fd)
+        raise TeamError("Lock pemasangan (~/.cache/media-keycloud): " + safe_error(error)) from None
+    except BaseException:
+        if fd is not None:
+            os.close(fd)
+        raise
+    try:
+        yield
+    finally:
+        os.close(fd)
 
 
 def run(args, *, env=None, cwd=None, timeout=90):
@@ -348,20 +427,38 @@ def install_profiles(repo, state, credentials):
 def read_env(path):
     # Files generated here have JSON-quoted values. Never source them in a shell.
     result = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if line and not line.startswith("#"):
-            key, value = line.split("=", 1)
-            result[key] = json.loads(value)
+    for number, line in enumerate(read_text(path).splitlines(), 1):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        try:
+            key, raw = line.split("=", 1)
+            value = json.loads(raw)
+            if not re.fullmatch(r"[A-Z][A-Z0-9_]*", key) or key in result or not isinstance(value, str):
+                raise ValueError
+        except ValueError:
+            raise TeamError(f"{file_label(path)}: format env tidak valid pada baris {number}; "
+                            "gunakan NAMA=\"nilai\" tanpa nama ganda. Isi baris tidak ditampilkan.") from None
+        result[key] = value
     return result
 
 
 def read_state(data_dir):
-    try:
-        state = json.loads((data_dir / "team.json").read_text())
-    except (OSError, ValueError):
-        raise TeamError("Tim belum selesai diinstal. Jalankan setup dari repository.") from None
+    state = read_json(data_dir / "team.json")
     if state.get("schema") != 1 or state.get("data_dir") != str(data_dir):
         raise TeamError("Manifest tim tidak cocok dengan direktori ini.")
+    fields = ("root", "workspace", "deploy_repo", "hermes", "codex_model", "owner", "bot_username")
+    for key in fields:
+        if not isinstance(state.get(key), str) or not state[key]:
+            raise TeamError(f"team.json: field {key} harus berupa string yang tidak kosong.")
+    if state["root"] != str(data_dir / "hermes") or state["workspace"] != str(data_dir / "workspace"):
+        raise TeamError("team.json: root/workspace tidak cocok dengan layout installer; tinjau di VPS.")
+    if not Path(state["hermes"]).is_absolute() or not Path(state["deploy_repo"]).is_absolute():
+        raise TeamError("team.json: lokasi Hermes/repository harus berupa path absolut.")
+    model_id(state["codex_model"])
+    if model_mode(state) == "mixed":
+        if not isinstance(state.get("gemini_model"), str):
+            raise TeamError("team.json: gemini_model tidak lengkap untuk tim lama.")
+        model_id(state["gemini_model"])
     return state
 
 
@@ -381,10 +478,11 @@ def check_team(state, *, live=True, allow_legacy_gateway=False):
             path = profile / filename
             if not path.is_file() or path.is_symlink() or path.stat().st_mode & 0o077:
                 raise TeamError(f"File profil media-{role}/{filename} hilang atau izin bukan privat.")
-        cfg = json.loads((profile / "config.yaml").read_text())
+        cfg = read_json(profile / "config.yaml")
         env = read_env(profile / ".env")
         expected = config_for(role, state)
-        if allow_legacy_gateway and role == "pm" and "standalone" not in cfg.get("gateway", {}):
+        if (allow_legacy_gateway and role == "pm" and isinstance(cfg.get("gateway"), dict)
+                and "standalone" not in cfg["gateway"]):
             # Repair accepts exactly the old generated config, never arbitrary edits.
             expected["gateway"].pop("standalone")
         if cfg != expected:
@@ -410,12 +508,114 @@ def managed_unit(state):
     unit = unit_path()
     expected_unit = unit_text(data_dir)
     legacy_unit = expected_unit.replace("RestartPreventExitStatus=78\n", "")
-    if unit.is_symlink() or not unit.is_file() or unit.read_text() not in (expected_unit, legacy_unit):
+    if unit.is_symlink() or not unit.is_file() or read_text(unit) not in (expected_unit, legacy_unit):
         raise TeamError("Unit media-hermes bukan unit installer yang dikenali. Tinjau di VPS; tidak ditimpa.")
     controller = data_dir / "control.py"
     if controller.is_symlink() or not controller.is_file():
         raise TeamError("Controller tim hilang atau berupa symlink; perbaikan dibatalkan.")
     return unit
+
+
+def diagnose(data_dir):
+    """Read-only local inspection; no subprocesses, API calls, or service changes."""
+    failures = []
+
+    def fail(label, detail):
+        failures.append(label)
+        print(f"[GAGAL] {label}: {detail}")
+
+    def inspect(path, label, *, directory=False, optional=False, private=False, in_place=False):
+        try:
+            info = path.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                fail(label, "symlink; tidak dibaca.")
+                return False
+            if not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)):
+                fail(label, "jenis file tidak sesuai.")
+                return False
+            access = os.R_OK | (os.X_OK if directory else 0)
+            readable = os.access(path, access)
+            # Atomic replacement needs the parent directory, not write access to the old file.
+            writable = os.access(path, os.W_OK) if in_place else os.access(
+                path if directory else path.parent, os.W_OK | os.X_OK)
+            detail = (f"uid={info.st_uid} gid={info.st_gid} mode={stat.S_IMODE(info.st_mode):04o} "
+                      f"baca={'ya' if readable else 'tidak'} "
+                      f"{'tulis' if directory or in_place else 'tulis-induk'}={'ya' if writable else 'tidak'}")
+            if not readable or not writable or (private and info.st_mode & 0o077):
+                fail(label, detail + ("; izin harus privat." if private and info.st_mode & 0o077 else ""))
+                return False
+            print(f"[OK] {label}: {detail}")
+            return True
+        except FileNotFoundError:
+            if optional:
+                print(f"[INFO] {label}: belum dibuat.")
+            else:
+                fail(label, "tidak ditemukan.")
+        except OSError as error:
+            fail(label, safe_error(error))
+        return False
+
+    def probe(label, action):
+        try:
+            return action()
+        except (TeamError, OSError, ValueError, KeyError, TypeError) as error:
+            fail(label, safe_error(error))
+        return None
+
+    print(f"Diagnosis lokal v1 | uid={os.geteuid()} | tanpa sudo")
+    print("Tidak mencetak isi file, path dari manifest, API key, atau token.")
+    home = Path.home()
+    inspect(home, "home user", directory=True)
+    inspect(home / ".cache", "~/.cache", directory=True, optional=True)
+    lock_dir = home / ".cache/media-keycloud"
+    inspect(lock_dir, "direktori lock", directory=True, optional=True)
+    lock_path = lock_dir / "setup.lock"
+    if inspect(lock_path, "setup.lock", optional=True, in_place=True):
+        def probe_lock():
+            fd = os.open(lock_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    raise TeamError("sedang dipakai proses lain; jangan hapus file lock.") from None
+            finally:
+                os.close(fd)
+            print("[OK] lock pemasangan: tidak sedang dipakai saat diperiksa.")
+        probe("lock pemasangan", probe_lock)
+
+    inspect(data_dir, "direktori data tim", directory=True)
+    state = None
+    if inspect(data_dir / "team.json", "team.json", private=True):
+        state = probe("manifest", lambda: read_state(data_dir))
+    inspect(data_dir / "control.py", "control.py", private=True)
+    unit_ok = inspect(unit_path(), SERVICE)
+    root = data_dir / "hermes"
+    inspect(root, "home Hermes tim", directory=True)
+    inspect(root / "profiles", "direktori profiles", directory=True)
+    for role in ROLES:
+        profile = root / "profiles" / ("media-" + role)
+        inspect(profile, "media-" + role, directory=True)
+        for filename in (".env", "config.yaml", "SOUL.md"):
+            path = profile / filename
+            label = file_label(path)
+            if inspect(path, label, private=True):
+                reader = read_env if filename == ".env" else read_json if filename == "config.yaml" else read_text
+                probe(label, lambda p=path, read=reader: read(p))
+    inspect(data_dir / "workspace", "workspace tim", directory=True)
+    if state is not None:
+        if not os.access(state["hermes"], os.X_OK) or not Path(state["hermes"]).is_file():
+            fail("executable Hermes", "tidak ditemukan atau tidak dapat dieksekusi.")
+        else:
+            print("[OK] executable Hermes: tersedia; tidak dijalankan.")
+        if unit_ok:
+            probe("unit/controller", lambda: managed_unit(state))
+        if not failures:
+            probe("konsistensi tim", lambda: check_team(state, live=False, allow_legacy_gateway=True))
+    if failures:
+        print(f"Diagnosis selesai: {len(failures)} masalah lokal terdeteksi. Kirim keluaran ini untuk ditinjau.")
+    else:
+        print("Diagnosis selesai: pemeriksaan lokal lolos. Akses API/bot, worker, dan layanan belum diuji.")
+    return 1 if failures else 0
 
 
 def repair_gateway(state):
@@ -447,7 +647,11 @@ def assert_workers_idle(state):
     output = run([state["hermes"], "-p", "media-pm", "kanban", "--board", BOARD,
                   "list", "--status", "running", "--json"],
                  env=isolated_env(Path(state["root"])), cwd=state["workspace"])
-    tasks = json.loads(output)
+    try:
+        tasks = json.loads(output)
+    except ValueError:
+        raise TeamError("Respons status worker bukan JSON. Gateway tim sudah dihentikan; "
+                        "konfigurasi model belum diubah. Tinjau kompatibilitas CLI Hermes di VPS.") from None
     if not isinstance(tasks, list):
         raise TeamError("Status worker tidak dapat dipastikan; konfigurasi model belum diubah.")
     if tasks:
@@ -577,19 +781,18 @@ def main():
     parser.add_argument("--data-dir", type=Path, default=Path.home() / ".local/share/media-keycloud")
     parser.add_argument("command", choices=["setup", "check", "status", "start", "stop", "restart",
                                              "logs", "board", "profiles", "rotate-keys",
-                                             "repair-gateway", "use-codex", "models", "_gateway"])
+                                             "repair-gateway", "use-codex", "models", "diagnose", "_gateway"])
     parser.add_argument("--no-start", action="store_true", help="setup saja: siapkan tanpa menyalakan bot")
     parser.add_argument("--offline", action="store_true", help="check saja: tanpa akses provider/Telegram")
     args = parser.parse_args()
     if os.geteuid() == 0:
         raise TeamError("Jalankan sebagai user pemilik Hermes (misalnya ubuntu), tanpa sudo.")
     data_dir = args.data_dir.expanduser().resolve()
+    if args.command == "diagnose":
+        return diagnose(data_dir)
     if args.command in ("setup", "use-codex"):
         # Serialize installers, without creating the final directory before preflight.
-        lock_dir = Path.home() / ".cache/media-keycloud"
-        lock_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with (lock_dir / "setup.lock").open("w") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with setup_lock():
             if args.command == "setup":
                 setup(args, data_dir)
             else:
@@ -654,11 +857,11 @@ def main():
 
 if __name__ == "__main__":
     try:
-        main()
-    except (TeamError, OSError, ValueError, KeyError) as error:
-        # Unknown OS/JSON errors can include sensitive paths/values; keep generic.
-        print("GAGAL: " + (str(error) if isinstance(error, TeamError) else
-                           "Operasi lokal gagal. Periksa izin/path, manifest, atau proses setup lain."), file=sys.stderr)
+        sys.exit(main())
+    except (TeamError, OSError, ValueError, KeyError, TypeError) as error:
+        print("GAGAL: " + safe_error(error), file=sys.stderr)
+        print("Diagnosis lokal: python3 scripts/hermes-team.py diagnose "
+              "(tambahkan --data-dir yang sama jika memakai direktori khusus).", file=sys.stderr)
         sys.exit(1)
     except (KeyboardInterrupt, EOFError):
         print("Dibatalkan. Konfigurasi Hermes lama tetap terpisah.", file=sys.stderr)
