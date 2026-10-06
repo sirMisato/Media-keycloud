@@ -12,6 +12,7 @@ import tempfile
 import unittest
 from unittest import mock
 import urllib.error
+import yaml
 
 REPO = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("team", REPO / "scripts/hermes-team.py")
@@ -103,13 +104,13 @@ else:
             self.assertNotIn(secret, output)
         self.assertNotIn(str(self.base), output)
 
-    def test_diagnose_identifies_json_and_env_lines_without_leaking_values(self):
+    def test_diagnose_identifies_yaml_and_env_lines_without_leaking_values(self):
         root, unit = self.installed_team()
-        (root / "profiles/media-uiux/config.yaml").write_text("model: " + CREDS["gemini"] + "\n")
+        (root / "profiles/media-uiux/config.yaml").write_text("model: [" + CREDS["gemini"] + "\n")
         (root / "profiles/media-qa/.env").write_text("# fixture\nGOOGLE_API_KEY=" + CREDS["gemini"] + "\n")
         code, output = self.local_diagnosis(unit)
         self.assertEqual(code, 1)
-        self.assertIn("media-uiux/config.yaml: JSON tidak valid pada baris 1", output)
+        self.assertIn("media-uiux/config.yaml: YAML tidak valid atau tag tidak didukung pada baris", output)
         self.assertIn("media-qa/.env: format env tidak valid pada baris 2", output)
         for secret in CREDS.values():
             self.assertNotIn(secret, output)
@@ -126,6 +127,71 @@ else:
         self.assertRegex(output, r"\[GAGAL\] media-pm/\.env: .*baca=tidak")
         self.assertRegex(output, r"\[GAGAL\] media-security/\.env: .*mode=0644")
         self.assertEqual(shared.stat().st_mode & 0o777, 0o644)
+
+    def test_diagnose_and_models_accept_yaml_without_rewriting_profiles(self):
+        root, unit = self.installed_team()
+        for role, flow in (("pm", True), ("backend", False)):
+            path = root / "profiles" / ("media-" + role) / "config.yaml"
+            path.write_text("# Native YAML fixture\n" + yaml.safe_dump(
+                team.config_for(role, self.state), default_flow_style=flow, sort_keys=False, width=10000))
+        before = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+        code, output = self.local_diagnosis(unit)
+        self.assertEqual(code, 0, output)
+        with contextlib.redirect_stdout(io.StringIO()) as models:
+            team.show_models(self.state)
+        self.assertIn("media-pm: provider=openai-api", models.getvalue())
+        self.assertIn("media-backend: provider=openai-api", models.getvalue())
+        for path, value in before.items():
+            self.assertEqual(path.read_bytes(), value)
+
+    def test_profile_reader_rejects_ambiguous_yaml_and_tags_without_leaks(self):
+        path = self.base / "media-pm/config.yaml"
+        secret = CREDS["openai"]
+        cases = ('{"model": "' + secret + '", "model": {}}',
+                 "model: " + secret + "\nmodel: {}\n",
+                 "model: {provider: " + secret + ", provider: gemini}\n",
+                 "model: !!python/object/apply:builtins.print ['" + secret + "']\n",
+                 "model: [" + secret + "\n",
+                 "model: &a [*a, '" + secret + "']\n",
+                 "- " + secret + "\n", "", "null\n")
+        for raw in cases:
+            team.write_private(path, raw)
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                with self.assertRaises(team.TeamError) as caught:
+                    team.read_profile_config(path)
+            self.assertNotIn(secret, str(caught.exception))
+            self.assertEqual(output.getvalue(), "")
+            self.assertEqual(path.read_text(), raw)
+
+    def test_yaml_drift_or_corruption_blocks_migration_before_stopping(self):
+        root, unit = self.installed_team()
+        path = root / "profiles/media-pm/config.yaml"
+        edited = team.config_for("pm", self.state)
+        edited["platforms"]["telegram"]["extra"]["dm_policy"] = "open"
+        invalid = (yaml.safe_dump(edited), "model: [" + CREDS["telegram"] + "\n")
+        with mock.patch.object(team, "unit_path", return_value=unit), \
+             mock.patch.object(team, "control") as control, \
+             mock.patch.object(team, "check_models") as models:
+            for raw in invalid:
+                path.write_text(raw)
+                before = {p: p.read_bytes() for p in self.base.rglob("*") if p.is_file()}
+                with self.assertRaises(team.TeamError) as caught:
+                    team.use_codex(self.state)
+                self.assertNotIn(CREDS["telegram"], str(caught.exception))
+                control.assert_not_called()
+                models.assert_not_called()
+                for file, value in before.items():
+                    self.assertEqual(file.read_bytes(), value)
+
+    def test_missing_yaml_reader_has_actionable_error_and_json_still_works(self):
+        path = self.base / "media-pm/config.yaml"
+        with mock.patch.dict(team.sys.modules, {"yaml": None}):
+            team.write_json(path, {"model": {"provider": "openai-api"}})
+            self.assertEqual(team.read_profile_config(path)["model"]["provider"], "openai-api")
+            path.write_text("model: " + CREDS["openai"] + "\n")
+            with self.assertRaisesRegex(team.TeamError, "python3-yaml") as caught:
+                team.read_profile_config(path)
+            self.assertNotIn(CREDS["openai"], str(caught.exception))
 
     def test_diagnose_handles_missing_or_invalid_manifest_without_setup_advice(self):
         _root, unit = self.installed_team()
@@ -243,7 +309,9 @@ else:
         pm_config = root / "profiles/media-pm/config.yaml"
         legacy = json.loads(pm_config.read_text())
         legacy["gateway"].pop("standalone")
-        team.write_json(pm_config, legacy)
+        team.write_private(pm_config, yaml.safe_dump(legacy, default_flow_style=True, width=10000))
+        backend_config = root / "profiles/media-backend/config.yaml"
+        team.write_private(backend_config, yaml.safe_dump(team.config_for("backend", self.state)))
         for role in team.ROLES:
             path = root / "profiles" / ("media-" + role) / "SOUL.md"
             path.write_text(path.read_text() + "\nInstruksi lokal pemilik tetap ada.\n")
@@ -570,6 +638,25 @@ class NativeHermesTests(unittest.TestCase):
             team.run([state["hermes"], "-p", "media-pm", "kanban", "boards", "create", team.BOARD,
                       "--default-workdir", state["workspace"]], env=env, cwd=state["workspace"])
             if migrate:
+                # Exercise Hermes' real writer, not only PyYAML fixture serialization.
+                paths = [root / "profiles" / ("media-" + role) / "config.yaml" for role in ("pm", "backend")]
+                rewrite = """import json, sys
+from pathlib import Path
+from hermes_cli.config import atomic_config_write
+for name in sys.argv[1:]:
+    path = Path(name)
+    config = json.loads(path.read_text())
+    path.write_text('# Native YAML fixture\\n{}\\n')
+    atomic_config_write(path, config)
+print('NATIVE_YAML_OK')
+"""
+                result = team.run([os.environ["MEDIA_HERMES_PYTHON"], "-c", rewrite, *paths],
+                                  env=env, cwd=state["workspace"], timeout=120)
+                self.assertIn("NATIVE_YAML_OK", result)
+                for role, path in zip(("pm", "backend"), paths):
+                    with self.assertRaises(json.JSONDecodeError):
+                        json.loads(path.read_text())
+                    self.assertEqual(team.read_profile_config(path), team.config_for(role, state))
                 team.write_json(base / "team.json", state)
                 team.write_private(base / "control.py", "# old controller\n")
                 unit = base / "units/media-hermes.service"

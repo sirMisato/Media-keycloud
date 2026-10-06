@@ -21,15 +21,19 @@ lama tetap didukung sampai pemilik menjalankan migrasi di bawah.
 
 ## Mengganti instalasi lama menjadi semua Codex
 
+Pada Ubuntu, pastikan pembaca YAML tersedia untuk Python sistem yang dipakai
+controller service: `sudo apt-get install -y python3-yaml`. Ini diperlukan
+jika Hermes menyimpan ulang `config.yaml` sebagai YAML biasa.
+
 Jalankan sebagai user pemasang Hermes, tanpa sudo, satu per satu setelah
 perintah sebelumnya berhasil:
 
 ```bash
 cd ~/Media-keycloud
 git pull --ff-only origin main
-python3 scripts/hermes-team.py use-codex
-python3 scripts/hermes-team.py start
-python3 scripts/hermes-team.py models
+/usr/bin/python3 scripts/hermes-team.py use-codex
+/usr/bin/python3 scripts/hermes-team.py start
+/usr/bin/python3 scripts/hermes-team.py models
 ```
 
 `use-codex` mengambil **model Codex dan OpenAI API key dari profil PM yang
@@ -66,8 +70,9 @@ karena perubahan lokal, selesaikan perubahan itu dahulu tanpa force-reset.
 ```bash
 cd ~/Media-keycloud
 git pull --ff-only origin main
+sudo apt-get install -y python3-yaml
 sudo loginctl enable-linger "$USER"
-python3 scripts/hermes-team.py setup
+/usr/bin/python3 scripts/hermes-team.py setup
 ```
 
 Python dijalankan **tanpa sudo**. Linger menjaga user service/D-Bus tetap
@@ -188,11 +193,40 @@ berada di `hermes/profiles` di dalamnya, dan lock di
 khusus, tambahkan `--data-dir /lokasi/tim` pada perintah.
 Laporan `EACCES` menunjukkan masalah akses, bukan alasan menjalankan
 installer dengan sudo atau mengubah seluruh home memakai `chown -R`.
-`JSON tidak valid` juga dapat berarti `config.yaml` telah ditulis ulang
-sebagai YAML biasa; installer mengharapkan format JSON yang dibuatnya.
-Tinjau konfigurasi lokal sebelum memperbaiki format; jangan mereset profil.
 Lock yang sibuk harus ditunggu, bukan dihapus. Manifest yang hilang atau
 rusak perlu ditinjau bersama file tim yang masih ada sebelum setup ulang.
+
+### Config PM/Backend dilaporkan bukan JSON
+
+Skrip lama hanya membaca JSON walaupun nama file `config.yaml`. Hermes dapat
+menyimpan file tersebut sebagai YAML (termasuk mapping dalam satu baris),
+sehingga error JSON belum membuktikan bahwa file rusak. Pembaca baru menerima
+kedua format; isi konfigurasi tetap harus cocok dengan manifest pemasangan.
+`team.json` tetap memerlukan JSON, dan format `.env` tetap berpetik ganda.
+
+```bash
+sudo apt-get install -y python3-yaml
+cd ~/Media-keycloud &&
+git pull --ff-only origin main &&
+/usr/bin/python3 scripts/hermes-team.py diagnose &&
+/usr/bin/python3 scripts/hermes-team.py use-codex &&
+/usr/bin/python3 scripts/hermes-team.py models &&
+/usr/bin/python3 scripts/hermes-team.py start
+```
+
+`sudo` hanya untuk pemasangan paket Ubuntu. Interpreter `/usr/bin/python3`
+memastikan skrip menggunakan paket YAML yang juga tersedia pada controller
+systemd. Pembacaan/diagnosis tidak mengubah file. Migrasi yang berhasil
+menulis konfigurasi enam profil dalam format JSON yang juga valid YAML,
+serta memperbarui controller agar startup berikutnya bisa membaca YAML.
+Sesi, task, instruksi peran lokal, token Telegram, dan OpenAI key dipertahankan.
+
+Jika masih muncul `YAML tidak valid` atau `Konfigurasi ... berubah dari
+manifest`, berhenti dan bagikan pesan error/diagnosis. Jangan mengganti
+config dengan template kosong atau menjalankan setup ulang. Parser menolak
+nama field ganda, tag objek, merge key, serta struktur rekursif/terlalu besar;
+pesan error tidak menampilkan cuplikan isi file. Tidak ada perbaikan otomatis
+untuk sintaks rusak atau perubahan pengaturan yang belum dikenali.
 
 ```bash
 cd ~/Media-keycloud
@@ -310,7 +344,8 @@ backup aplikasi. Jangan commit data tim. Pantau pemakaian disk oleh task/log.
 
 ## Pengujian dan referensi
 
-Tes offline: `python3 -m unittest discover -s tests/hermes -p 'test_*.py' -v`.
+Tes offline membutuhkan PyYAML (`python3-yaml` pada Ubuntu):
+`python3 -m unittest discover -s tests/hermes -p 'test_*.py' -v`.
 Tes kontrak native dijalankan bila `MEDIA_HERMES_BIN` menunjuk CLI Hermes dan
 `MEDIA_HERMES_PYTHON` menunjuk Python runtime-nya. Memakai home sementara dan
 kredensial dummy, tanpa inference atau bot live. CI memin source Hermes.
@@ -320,6 +355,9 @@ Tes juga memigrasikan profil lama memakai CLI Kanban asli dan memeriksa
 keenam runtime memakai OpenAI API dengan mode `codex_responses`, tanpa
 inference berbayar. Regresi mencakup worker aktif, rollback penulisan gagal,
 preservasi bot/riwayat/instruksi lokal, dan rotasi key tanpa Gemini.
+Regresi YAML mencakup file hasil penulis konfigurasi Hermes asli, migrasi
+format flow/block, diagnosis tanpa penulisan, serta penolakan konfigurasi
+berubah/rusak dan redaksi rahasia pada pesan parser.
 
 Rujukan primer, diperiksa 26 September 2026:
 

@@ -17,10 +17,17 @@ Working tree harus bersih. Bila ada perubahan lokal, commit atau simpan perubaha
 Berlaku untuk tim yang dipasang melalui `scripts/hermes-team.py setup`:
 
 ```bash
-python3 scripts/hermes-team.py use-codex
-python3 scripts/hermes-team.py models
-python3 scripts/hermes-team.py start
+sudo apt-get install -y python3-yaml
+/usr/bin/python3 scripts/hermes-team.py diagnose &&
+/usr/bin/python3 scripts/hermes-team.py use-codex &&
+/usr/bin/python3 scripts/hermes-team.py models &&
+/usr/bin/python3 scripts/hermes-team.py start
 ```
+
+`sudo` hanya memasang pembaca YAML pada Python sistem. Skrip Hermes tetap
+berjalan sebagai user biasa. Versi baru membaca `config.yaml` dalam format
+JSON maupun YAML yang disimpan Hermes; error JSON dari versi lama tidak
+perlu diatasi dengan menghapus atau mereset konfigurasi profil.
 
 PM, UI/UX, Backend, QA/QC, Security, dan DevOps harus menunjukkan `provider=openai-api` dengan model Codex yang sama. Migrasi mengambil API key/model dari profil PM, mempertahankan bot Telegram dan peran agen, serta menghapus Gemini key dari konfigurasi aktif tim. Tidak ada API key di frontend situs.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tim Hermes Media Keycloud. Python stdlib; rahasia hanya diminta di TTY VPS."""
+"""Tim Hermes Media Keycloud. Rahasia hanya diminta di TTY VPS; PyYAML membaca config Hermes."""
 from __future__ import annotations
 
 import argparse
@@ -85,10 +85,75 @@ def read_json(path):
     try:
         result = json.loads(read_text(path))
     except json.JSONDecodeError as error:
-        raise TeamError(file_label(path) + ": " + safe_error(error) +
-                        " Installer mengharapkan objek JSON (juga valid sebagai YAML).") from None
+        raise TeamError(file_label(path) + ": " + safe_error(error)) from None
     if not isinstance(result, dict):
         raise TeamError(file_label(path) + ": struktur harus berupa objek JSON.")
+    return result
+
+
+def read_profile_config(path):
+    """Read JSON or Hermes YAML without executing tags or accepting ambiguous keys."""
+    label = file_label(path)
+    raw = read_text(path)
+    if len(raw) > 262144:
+        raise TeamError(label + ": konfigurasi terlalu besar untuk profil tim.")
+
+    def unique_mapping(pairs):
+        result = {}
+        for key, value in pairs:
+            if not isinstance(key, str) or key in result:
+                raise TeamError(label + ": nama field harus string dan tidak boleh ganda.")
+            result[key] = value
+        return result
+
+    try:
+        result = json.loads(raw, object_pairs_hook=unique_mapping)
+    except json.JSONDecodeError:
+        try:
+            import yaml
+        except ImportError:
+            raise TeamError(label + ": membutuhkan pembaca YAML. Pada Ubuntu, pasang "
+                            "`sudo apt-get install -y python3-yaml`, lalu gunakan "
+                            "`/usr/bin/python3 scripts/hermes-team.py diagnose`.") from None
+
+        class ProfileLoader(yaml.SafeLoader):
+            def construct_mapping(self, node, deep=False):
+                # Do not flatten YAML merge keys: generated profiles never need them.
+                pairs = [(self.construct_object(key, deep=deep), self.construct_object(value, deep=deep))
+                         for key, value in node.value]
+                return unique_mapping(pairs)
+
+        try:
+            result = yaml.load(raw, Loader=ProfileLoader)
+        except yaml.YAMLError as error:
+            mark = getattr(error, "problem_mark", None)
+            location = f" pada baris {mark.line + 1}, kolom {mark.column + 1}" if mark else ""
+            # A YAML exception embeds source snippets, potentially including credentials.
+            raise TeamError(label + ": YAML tidak valid atau tag tidak didukung" + location +
+                            ". Isi konfigurasi tidak ditampilkan.") from None
+        except RecursionError:
+            raise TeamError(label + ": struktur YAML terlalu dalam.") from None
+    except RecursionError:
+        raise TeamError(label + ": struktur JSON terlalu dalam.") from None
+    if not isinstance(result, dict):
+        raise TeamError(label + ": konfigurasi harus berupa mapping/objek.")
+    # YAML writers may share tool lists with anchors. Accept those, but reject
+    # cycles/expansion bombs and non-JSON types before comparing with the manifest.
+    active, budget = set(), [4096]
+
+    def validate(value, depth=0):
+        budget[0] -= 1
+        if depth > 32 or budget[0] < 0 or id(value) in active:
+            raise TeamError(label + ": struktur berulang atau terlalu kompleks.")
+        if isinstance(value, (dict, list)):
+            active.add(id(value))
+            for child in value.values() if isinstance(value, dict) else value:
+                validate(child, depth + 1)
+            active.remove(id(value))
+        elif type(value) not in (str, bool, int, float, type(None)):
+            raise TeamError(label + ": tipe nilai konfigurasi tidak didukung.")
+
+    validate(result)
     return result
 
 
@@ -150,7 +215,7 @@ def write_private(path, content, *, mode=0o600):
 
 
 def write_json(path, value):
-    # JSON is valid YAML; no PyYAML installation is needed on the VPS.
+    # JSON is valid YAML; Hermes may later rewrite it using native YAML syntax.
     write_private(path, json.dumps(value, indent=2, ensure_ascii=False) + "\n")
 
 
@@ -478,7 +543,7 @@ def check_team(state, *, live=True, allow_legacy_gateway=False):
             path = profile / filename
             if not path.is_file() or path.is_symlink() or path.stat().st_mode & 0o077:
                 raise TeamError(f"File profil media-{role}/{filename} hilang atau izin bukan privat.")
-        cfg = read_json(profile / "config.yaml")
+        cfg = read_profile_config(profile / "config.yaml")
         env = read_env(profile / ".env")
         expected = config_for(role, state)
         if (allow_legacy_gateway and role == "pm" and isinstance(cfg.get("gateway"), dict)
@@ -599,7 +664,7 @@ def diagnose(data_dir):
             path = profile / filename
             label = file_label(path)
             if inspect(path, label, private=True):
-                reader = read_env if filename == ".env" else read_json if filename == "config.yaml" else read_text
+                reader = read_env if filename == ".env" else read_profile_config if filename == "config.yaml" else read_text
                 probe(label, lambda p=path, read=reader: read(p))
     inspect(data_dir / "workspace", "workspace tim", directory=True)
     if state is not None:
@@ -637,9 +702,11 @@ def repair_gateway(state):
 
 
 def show_models(state):
+    # Validate before displaying model fields; arbitrary edited values could be secrets.
+    check_team(state, live=False, allow_legacy_gateway=True)
     for role in ROLES:
         path = Path(state["root"]) / "profiles" / ("media-" + role) / "config.yaml"
-        model = json.loads(path.read_text())["model"]
+        model = read_profile_config(path)["model"]
         print(f"media-{role}: provider={model['provider']}, model={model['default']}")
 
 
